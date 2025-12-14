@@ -4,6 +4,17 @@ import math
 from filters import EMAFilter
 
 
+# Presets HSV para diferentes colores (H: 0-179, S: 0-255, V: 0-255)
+HSV_PRESETS = {
+    1: {'name': 'AZUL', 'lower': (100, 120, 50), 'upper': (130, 255, 255)},
+    2: {'name': 'VERDE', 'lower': (35, 80, 50), 'upper': (85, 255, 255)},
+    3: {'name': 'ROJO', 'lower': (0, 120, 70), 'upper': (10, 255, 255)},  # Rojo bajo
+    4: {'name': 'AMARILLO', 'lower': (20, 100, 100), 'upper': (35, 255, 255)},
+    5: {'name': 'MAGENTA', 'lower': (140, 80, 50), 'upper': (170, 255, 255)},
+    6: {'name': 'CIAN', 'lower': (80, 100, 50), 'upper': (100, 255, 255)},
+}
+
+
 class ColorPainter:
     def __init__(self, width, height):
         self.width = width
@@ -37,23 +48,128 @@ class ColorPainter:
         # Filtro EMA para suavizar centroide
         self.centroid_filter = EMAFilter(alpha=0.4)
 
-    def detect_blue_object(self, frame):
-        """Detección optimizada de objeto azul con cache"""
+        # Configuracion HSV para tracking de color
+        self.current_preset = 1  # Azul por defecto
+        self.preset_name = HSV_PRESETS[1]['name']
+        self.hsv_lower = np.array(HSV_PRESETS[1]['lower'])
+        self.hsv_upper = np.array(HSV_PRESETS[1]['upper'])
+
+        # Modo calibracion HSV
+        self.hsv_calibration_mode = False
+        self.hsv_window_name = 'HSV Calibration'
+
+    def set_hsv_preset(self, preset_num: int) -> bool:
+        """Cambia al preset HSV indicado. Retorna True si exitoso."""
+        if preset_num not in HSV_PRESETS:
+            return False
+
+        preset = HSV_PRESETS[preset_num]
+        self.current_preset = preset_num
+        self.preset_name = preset['name']
+        self.hsv_lower = np.array(preset['lower'])
+        self.hsv_upper = np.array(preset['upper'])
+
+        # Invalidar cache de mascara
+        self.last_mask = None
+
+        print(f"[COLOR] Preset {preset_num}: {preset['name']} "
+              f"HSV({preset['lower']}) - ({preset['upper']})")
+        return True
+
+    def reset_to_default_preset(self):
+        """Resetea al preset por defecto (azul)."""
+        self.set_hsv_preset(1)
+
+    def toggle_hsv_calibration(self):
+        """Activa/desactiva el modo de calibracion HSV con trackbars."""
+        if self.hsv_calibration_mode:
+            # Desactivar: guardar valores y cerrar ventana
+            self._close_hsv_calibration()
+        else:
+            # Activar: crear ventana con trackbars
+            self._open_hsv_calibration()
+
+        return self.hsv_calibration_mode
+
+    def _open_hsv_calibration(self):
+        """Abre la ventana de calibracion HSV."""
+        self.hsv_calibration_mode = True
+        cv2.namedWindow(self.hsv_window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.hsv_window_name, 400, 300)
+
+        # Crear trackbars
+        cv2.createTrackbar('H Low', self.hsv_window_name, int(self.hsv_lower[0]), 179, lambda x: None)
+        cv2.createTrackbar('S Low', self.hsv_window_name, int(self.hsv_lower[1]), 255, lambda x: None)
+        cv2.createTrackbar('V Low', self.hsv_window_name, int(self.hsv_lower[2]), 255, lambda x: None)
+        cv2.createTrackbar('H High', self.hsv_window_name, int(self.hsv_upper[0]), 179, lambda x: None)
+        cv2.createTrackbar('S High', self.hsv_window_name, int(self.hsv_upper[1]), 255, lambda x: None)
+        cv2.createTrackbar('V High', self.hsv_window_name, int(self.hsv_upper[2]), 255, lambda x: None)
+
+        print("[HSV] Calibracion activada - Ajusta los trackbars")
+
+    def _close_hsv_calibration(self):
+        """Cierra la ventana de calibracion y guarda valores."""
+        if self.hsv_calibration_mode:
+            try:
+                # Leer valores finales de trackbars
+                h_low = cv2.getTrackbarPos('H Low', self.hsv_window_name)
+                s_low = cv2.getTrackbarPos('S Low', self.hsv_window_name)
+                v_low = cv2.getTrackbarPos('V Low', self.hsv_window_name)
+                h_high = cv2.getTrackbarPos('H High', self.hsv_window_name)
+                s_high = cv2.getTrackbarPos('S High', self.hsv_window_name)
+                v_high = cv2.getTrackbarPos('V High', self.hsv_window_name)
+
+                self.hsv_lower = np.array([h_low, s_low, v_low])
+                self.hsv_upper = np.array([h_high, s_high, v_high])
+                self.preset_name = 'CUSTOM'
+
+                cv2.destroyWindow(self.hsv_window_name)
+                print(f"[HSV] Calibracion guardada: ({h_low},{s_low},{v_low}) - ({h_high},{s_high},{v_high})")
+            except cv2.error:
+                pass
+
+        self.hsv_calibration_mode = False
+        self.last_mask = None  # Invalidar cache
+
+    def _update_hsv_from_trackbars(self):
+        """Actualiza valores HSV desde trackbars en tiempo real."""
+        if not self.hsv_calibration_mode:
+            return
+
+        try:
+            h_low = cv2.getTrackbarPos('H Low', self.hsv_window_name)
+            s_low = cv2.getTrackbarPos('S Low', self.hsv_window_name)
+            v_low = cv2.getTrackbarPos('V Low', self.hsv_window_name)
+            h_high = cv2.getTrackbarPos('H High', self.hsv_window_name)
+            s_high = cv2.getTrackbarPos('S High', self.hsv_window_name)
+            v_high = cv2.getTrackbarPos('V High', self.hsv_window_name)
+
+            self.hsv_lower = np.array([h_low, s_low, v_low])
+            self.hsv_upper = np.array([h_high, s_high, v_high])
+            self.last_mask = None  # Invalidar cache para ver cambios en tiempo real
+        except cv2.error:
+            pass
+
+    def detect_color_object(self, frame):
+        """Deteccion de objeto por color HSV configurable."""
         current_time = cv2.getTickCount() / cv2.getTickFrequency()
 
-        # Usar cache para máscaras similares
-        if self.last_mask is not None and (current_time - self.mask_cache_time) < 0.1:
+        # Actualizar HSV desde trackbars si esta en modo calibracion
+        if self.hsv_calibration_mode:
+            self._update_hsv_from_trackbars()
+
+        # Usar cache para mascaras similares (solo si no esta calibrando)
+        if (self.last_mask is not None and
+                (current_time - self.mask_cache_time) < 0.1 and
+                not self.hsv_calibration_mode):
             mask = self.last_mask
         else:
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-            # Rangos para azul en HSV (optimizados)
-            lower_blue = np.array([100, 120, 50])
-            upper_blue = np.array([130, 255, 255])
+            # Usar rangos HSV configurables
+            mask = cv2.inRange(hsv, self.hsv_lower, self.hsv_upper)
 
-            mask = cv2.inRange(hsv, lower_blue, upper_blue)
-
-            # Operaciones morfológicas optimizadas
+            # Operaciones morfologicas optimizadas
             kernel = np.ones((3, 3), np.uint8)
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
@@ -65,10 +181,10 @@ class ColorPainter:
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         if contours:
-            # Encontrar el contorno más grande
+            # Encontrar el contorno mas grande
             largest_contour = max(contours, key=cv2.contourArea)
             if cv2.contourArea(largest_contour) > 300:
-                # Calcular centro del contorno
+                # Calcular centro del contorno via moments
                 M = cv2.moments(largest_contour)
                 if M["m00"] != 0:
                     cx = int(M["m10"] / M["m00"])
@@ -76,6 +192,10 @@ class ColorPainter:
                     return (cx, cy), largest_contour
 
         return None, None
+
+    def detect_blue_object(self, frame):
+        """Alias para compatibilidad con codigo existente."""
+        return self.detect_color_object(frame)
 
     def add_paint_effect(self, position):
         """Añade efectos de partículas al pintar"""
@@ -175,6 +295,38 @@ class ColorPainter:
             self.brush_size = max(3, self.brush_size - 2)
         return self.brush_size
 
+    def _draw_hsv_overlay(self, frame):
+        """Dibuja overlay con info del preset HSV activo."""
+        # Posicion en esquina superior derecha
+        x_start = self.width - 220
+        y_start = 60
+
+        # Fondo semi-transparente
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (x_start - 10, y_start - 25),
+                      (self.width - 10, y_start + 55), (20, 20, 30), -1)
+        cv2.addWeighted(overlay, 0.8, frame, 0.2, 0, frame)
+
+        # Borde
+        cv2.rectangle(frame, (x_start - 10, y_start - 25),
+                      (self.width - 10, y_start + 55), (80, 80, 100), 1, cv2.LINE_AA)
+
+        # Nombre del preset
+        preset_color = (0, 255, 255) if self.hsv_calibration_mode else (100, 255, 100)
+        mode_text = "[CALIB]" if self.hsv_calibration_mode else ""
+        cv2.putText(frame, f"HSV: {self.preset_name} {mode_text}", (x_start, y_start),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, preset_color, 1, cv2.LINE_AA)
+
+        # Valores lower
+        lower_text = f"L: {self.hsv_lower[0]:3d},{self.hsv_lower[1]:3d},{self.hsv_lower[2]:3d}"
+        cv2.putText(frame, lower_text, (x_start, y_start + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 200), 1, cv2.LINE_AA)
+
+        # Valores upper
+        upper_text = f"H: {self.hsv_upper[0]:3d},{self.hsv_upper[1]:3d},{self.hsv_upper[2]:3d}"
+        cv2.putText(frame, upper_text, (x_start, y_start + 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 200), 1, cv2.LINE_AA)
+
     def draw_ui_elements_mejorados(self, frame, current_pos):
         """Dibujar elementos de UI mejorados"""
         # Panel de información con efecto glassmorphism
@@ -207,9 +359,12 @@ class ColorPainter:
             cv2.circle(frame, color_sample_pos, 10 + i, glow_color, 1, cv2.LINE_AA)
 
         # Instrucciones con iconos
-        instructions = "[SPACE]Clear [C]Color [+/-]Size [M]Menu"
+        instructions = "[SPACE]Clear [C]Color [+/-]Size [M]Menu [1-6]HSV [H]Calib"
         cv2.putText(frame, instructions, (20, self.height - 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 170), 1, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 170), 1, cv2.LINE_AA)
+
+        # Overlay HSV info (lado derecho)
+        self._draw_hsv_overlay(frame)
 
         # Indicador de posición mejorado
         if current_pos:
