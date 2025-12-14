@@ -4,7 +4,8 @@ import numpy as np
 import time
 import os
 from ColorPainter import ColorPainter
-from Gesture3D import Gesture3D, SelectionMode
+from Gesture3D import Gesture3D, SelectionMode, Gesture
+from neon_menu import MenuButton, NeonMenu
 
 # Configuración para Ubuntu/Wayland
 os.environ['QT_QPA_PLATFORM'] = 'xcb'
@@ -20,7 +21,20 @@ class PizarraNeon:
 
         # Inicializar módulos
         self.color_painter = ColorPainter(self.ancho, self.alto)
-        self.gesture_3d = Gesture3D(self.ancho, self.alto)
+        self.gesture_3d = Gesture3D(self.ancho, self.alto, use_external_menu=True)
+        self.neon_menu = self._crear_neon_menu()
+        self.ultimo_dt = time.perf_counter()
+        self.prev_pinch_activo = False
+        self.ultima_pos_cursor = (self.ancho // 2, self.alto // 2)
+        self.debug_perf = False
+        self.perf_metrics = {
+            "total": 0.0,
+            "detect": 0.0,
+            "handle": 0.0,
+            "draw_figures": 0.0,
+            "menu_update": 0.0,
+            "menu_draw": 0.0,
+        }
 
         # Cache para optimización
         self.grid_cache = None
@@ -46,6 +60,45 @@ class PizarraNeon:
             'verde_seleccion': (0, 180, 0)
         }
 
+    def _crear_neon_menu(self):
+        """Configura el menú neon con callbacks de figuras."""
+
+        def crear_callback(figura):
+            def _callback(_):
+                posicion = self._posicion_segura_creacion()
+                self.gesture_3d.create_figure(figura, posicion)
+                self.neon_menu.close()
+
+            return _callback
+
+        def eliminar_callback(_):
+            self.gesture_3d.delete_selected_figure()
+            self.neon_menu.close()
+
+        palette = [
+            (255, 140, 80),
+            (120, 255, 200),
+            (255, 120, 200),
+            (90, 200, 255),
+            (255, 210, 120),
+            (160, 120, 255),
+        ]
+
+        botones = []
+        for idx, figura in enumerate(self.gesture_3d.available_figures):
+            color = palette[idx % len(palette)]
+            botones.append(MenuButton(figura, color, on_select=crear_callback(figura)))
+
+        botones.append(MenuButton("delete", (60, 60, 255), on_select=eliminar_callback))
+
+        return NeonMenu(
+            center=(self.ancho // 2, self.alto // 2),
+            radius=85,
+            button_radius=20,
+            inner_deadzone=26,
+            buttons=botones,
+        )
+
     def inicializar(self):
         """Inicializa todos los módulos del sistema"""
         print("╔═══════════════════════════════════════╗")
@@ -68,6 +121,20 @@ class PizarraNeon:
         print("[ OK ] ColorPainter: INICIALIZADO")
         print("[ OK ] Gesture3D: INICIALIZADO")
         return True
+
+    def _posicion_segura_creacion(self):
+        """Ajusta la posición de spawn para garantizar visibilidad."""
+
+        margen = 80
+        preferida = (
+            self.gesture_3d.last_pinch_position
+            or self.ultima_pos_cursor
+            or (self.ancho // 2, self.alto // 2)
+        )
+
+        x = min(self.ancho - margen, max(margen, int(preferida[0])))
+        y = min(self.alto - margen, max(margen, int(preferida[1])))
+        return (x, y)
 
     @staticmethod
     def dibujar_texto_limpio(image, text, position, font_scale, color, thickness=1):
@@ -277,6 +344,27 @@ class PizarraNeon:
         self.dibujar_texto_limpio(frame, fps_text, (self.ancho - 120, 30),
                                   0.5, color_fps, 1)
 
+    def _dibujar_overlay_perf(self, frame):
+        """Panel ligero con métricas de performance (toggle con tecla F)."""
+
+        panel_x, panel_y = 15, 60
+        ancho, alto = 210, 120
+        cv2.rectangle(frame, (panel_x, panel_y), (panel_x + ancho, panel_y + alto), (15, 15, 20), -1)
+        cv2.rectangle(frame, (panel_x, panel_y), (panel_x + ancho, panel_y + alto), (60, 100, 180), 1)
+
+        lineas = [
+            f"total : {self.perf_metrics['total']*1000:.1f} ms",
+            f"detect: {self.perf_metrics['detect']*1000:.1f} ms",
+            f"logic : {self.perf_metrics['handle']*1000:.1f} ms",
+            f"figures: {self.perf_metrics['draw_figures']*1000:.1f} ms",
+            f"menu up: {self.perf_metrics['menu_update']*1000:.1f} ms",
+            f"menu dr: {self.perf_metrics['menu_draw']*1000:.1f} ms",
+        ]
+
+        for i, texto in enumerate(lineas):
+            self.dibujar_texto_limpio(frame, texto, (panel_x + 10, panel_y + 25 + i * 18), 0.45,
+                                      self.colores['azul_electrico'], 1)
+
     def modo_seguimiento_color(self, frame):
         """Modo tracking optimizado"""
         self.dibujar_grid_minimal(frame)
@@ -294,8 +382,40 @@ class PizarraNeon:
 
         # Mostrar display de selección si hay figura seleccionada
         self.dibujar_display_seleccion(frame)
+        now = time.perf_counter()
+        dt = now - self.ultimo_dt
+        self.ultimo_dt = now
 
-        frame_procesado = self.gesture_3d.process_frame(frame)
+        # Evitar rotación cuando el menú está activo
+        menu_activo = self.neon_menu.is_visible()
+        self.gesture_3d.set_rotation_enabled(not menu_activo)
+        self.gesture_3d.set_external_menu_active(menu_activo)
+
+        profile = {} if self.debug_perf else None
+        frame_procesado = self.gesture_3d.process_frame(frame, profile=profile)
+
+        update_start = time.perf_counter()
+        self._actualizar_neon_menu(dt)
+        menu_activo = self.neon_menu.is_visible()
+        self.gesture_3d.set_rotation_enabled(not menu_activo)
+        self.gesture_3d.set_external_menu_active(menu_activo)
+        menu_update_dt = time.perf_counter() - update_start
+
+        menu_draw_start = time.perf_counter()
+        self.neon_menu.draw(frame_procesado)
+        menu_draw_dt = time.perf_counter() - menu_draw_start
+
+        if self.debug_perf:
+            self.perf_metrics = {
+                "total": time.perf_counter() - now,
+                "detect": profile.get("detect", 0.0) if profile else 0.0,
+                "handle": profile.get("handle", 0.0) if profile else 0.0,
+                "draw_figures": profile.get("draw_figures", 0.0) if profile else 0.0,
+                "menu_update": menu_update_dt,
+                "menu_draw": menu_draw_dt,
+            }
+            self._dibujar_overlay_perf(frame_procesado)
+
         return frame_procesado
 
     def procesar_teclas(self, key):
@@ -313,6 +433,10 @@ class PizarraNeon:
         elif key == ord('m'):
             self.modo_actual = "menu"
             print("[ MODE ] Main Menu: LOADED")
+        elif key == ord('f'):
+            self.debug_perf = not self.debug_perf
+            estado = "ON" if self.debug_perf else "OFF"
+            print(f"[ PERF ] Overlay {estado}")
 
         # Controles modo color
         elif self.modo_actual == "color":
@@ -379,6 +503,29 @@ class PizarraNeon:
             print("[ ACTION ] Selected figure deleted")
         elif key == ord('s'):
             self.gesture_3d.toggle_scale_mode()
+
+    def _actualizar_neon_menu(self, dt):
+        """Sincroniza gestos con el menú neon sin bloquear la app."""
+
+        self.ultima_pos_cursor = (
+            self.gesture_3d.index_tip
+            or self.gesture_3d.last_pinch_position
+            or self.ultima_pos_cursor
+        )
+
+        pinch_activo = self.gesture_3d.pinch_active
+        pinch_inicio = pinch_activo and not self.prev_pinch_activo
+        self.prev_pinch_activo = pinch_activo
+
+        toggled, gesture_center = self.gesture_3d.consume_menu_toggle()
+        if toggled:
+            if self.neon_menu.is_visible():
+                self.neon_menu.close()
+            else:
+                self.neon_menu.center = gesture_center or self.ultima_pos_cursor
+                self.neon_menu.open()
+
+        self.neon_menu.update(self.ultima_pos_cursor, pinch_inicio, dt)
 
     def ejecutar(self):
         """Bucle principal optimizado"""

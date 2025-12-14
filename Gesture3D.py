@@ -1,8 +1,14 @@
-import cv2
 import math
 import time
-import numpy as np
 from enum import Enum
+
+import numpy as np
+
+try:
+    import cv2
+except Exception:  # pragma: no cover - soporte en entornos sin dependencias de OpenCV
+    cv2 = None
+
 from geometry_utils import rotate_points
 from filters import EMAFilter
 
@@ -26,9 +32,11 @@ class SelectionMode(Enum):
 
 
 class Gesture3D:
-    def __init__(self, width, height):
+    def __init__(self, width, height, use_external_menu=False):
         self.width = width
         self.height = height
+        self.use_external_menu = use_external_menu
+        self.external_menu_active = False
 
         # Estado de figuras
         self.figures = []
@@ -49,6 +57,8 @@ class Gesture3D:
         self.menu_state = MenuState.HIDDEN
         self.menu_position = (width // 2, height // 2)
         self.menu_radius = 200
+        self.menu_toggle_requested = False
+        self.menu_toggle_position = None
 
         # Figuras disponibles en el menú
         self.available_figures = [
@@ -95,6 +105,7 @@ class Gesture3D:
         # Rotacion continua
         self.last_frame_time = time.perf_counter()
         self.rotation_speed = math.pi  # rad/s (180 grados por segundo)
+        self.rotation_enabled = True
 
         # Filtro EMA para suavizar pinch_position
         self.pinch_filter = EMAFilter(alpha=0.4)
@@ -113,7 +124,7 @@ class Gesture3D:
             self.mp_draw = mp.solutions.drawing_utils
             self.mediapipe_available = True
             print("[INFO] MediaPipe inicializado correctamente")
-        except ImportError:
+        except Exception:
             print("[WARN] MediaPipe no disponible, solo interfaz sin gestos.")
             self.mediapipe_available = False
 
@@ -148,7 +159,7 @@ class Gesture3D:
 
     def detect_gestures(self, frame):
         """Detección de gestos optimizada"""
-        if not self.mediapipe_available:
+        if cv2 is None or not self.mediapipe_available:
             return Gesture.NONE, None, None
 
         try:
@@ -226,8 +237,25 @@ class Gesture3D:
         dt = now - self.last_frame_time
         self.last_frame_time = now
 
-        # Menú con VICTORY (con cooldown)
-        if (gesture == Gesture.VICTORY and
+        if self.use_external_menu:
+            self._update_menu_toggle_state(gesture, pinch_position, current_time)
+
+            if self.external_menu_active:
+                # Solo actualizar estado de pinch sin manipular figuras ni rotación
+                if gesture == Gesture.PINCH:
+                    if not self.pinch_active:
+                        self.pinch_active = True
+                        self.last_pinch_position = pinch_position
+                        self.pinch_start_position = pinch_position
+                    elif pinch_position:
+                        self.last_pinch_position = pinch_position
+                else:
+                    self.pinch_active = False
+                    self.pinch_start_position = None
+                return
+
+        # Menú con VICTORY (con cooldown) - deshabilitado si se usa menú externo
+        if (not self.use_external_menu and gesture == Gesture.VICTORY and
                 current_time - self.last_victory_time > self.gesture_cooldown):
             self.menu_state = MenuState.VISIBLE if self.menu_state == MenuState.HIDDEN else MenuState.HIDDEN
             if pinch_position:
@@ -267,8 +295,27 @@ class Gesture3D:
         # Rotacion continua con mano abierta (MUTEX: no rotar si PINCH activo)
         if (gesture == Gesture.OPEN_HAND and
                 self.selected_figure and
-                not self.pinch_active):
+                not self.pinch_active and
+                self.rotation_enabled and
+                not self.external_menu_active):
             self.rotate_figure_continuous(dt)
+
+    def _update_menu_toggle_state(self, gesture, pinch_position, current_time):
+        """Registra toggles del menú externo usando solo el gesto VICTORY."""
+
+        if gesture == Gesture.VICTORY and current_time - self.last_victory_time > self.gesture_cooldown:
+            self.menu_toggle_requested = True
+            self.menu_toggle_position = pinch_position
+            self.last_victory_time = current_time
+
+    def consume_menu_toggle(self):
+        """Consume el toggle solicitado por gesto VICTORY."""
+
+        requested = self.menu_toggle_requested
+        position = self.menu_toggle_position
+        self.menu_toggle_requested = False
+        self.menu_toggle_position = None
+        return requested, position
 
     def handle_figure_scaling_by_fingers(self):
         """Escala suavizada basada en distancia entre dedos"""
@@ -306,6 +353,20 @@ class Gesture3D:
             return 1 + (scale_factor - 1) * 0.7  # Más suave al agrandar
         else:
             return 1 - (1 - scale_factor) * 0.5  # Más suave al reducir
+
+    def set_rotation_enabled(self, enabled: bool):
+        """Habilita o deshabilita la rotación continua de figuras."""
+
+        self.rotation_enabled = enabled
+
+    def set_external_menu_active(self, active: bool):
+        """Indica si un menú externo está activo para evitar conflictos."""
+
+        self.external_menu_active = active
+        if active:
+            self.menu_state = MenuState.HIDDEN
+            self.pinch_active = False
+            self.pinch_start_position = None
 
     def handle_menu_selection(self, position):
         """Detección de ítem del menú mejorada"""
@@ -692,7 +753,7 @@ class Gesture3D:
             cv2.circle(frame, pinch_position, 6, color, -1, cv2.LINE_AA)
 
         # Menú
-        if self.menu_state == MenuState.VISIBLE:
+        if not self.use_external_menu and self.menu_state == MenuState.VISIBLE:
             self.draw_enhanced_menu(frame)
 
         # Figuras
@@ -706,25 +767,38 @@ class Gesture3D:
                 self.mp_hands.HAND_CONNECTIONS
             )
 
-    def process_frame(self, frame):
-        """Procesar frame principal optimizado"""
+    def process_frame(self, frame, profile=None):
+        """Procesar frame principal optimizado."""
+        if cv2 is None:
+            return frame
+
+        total_start = time.perf_counter()
         current_time = time.time()
 
-        # Detectar gestos (pinch_position raw)
+        detect_start = time.perf_counter()
         gesture, raw_pinch_position, hand_landmarks = self.detect_gestures(frame)
+        detect_dt = time.perf_counter() - detect_start
         self.current_gesture = gesture
 
-        # Aplicar filtro EMA a pinch_position para reducir jitter
         pinch_position = self.pinch_filter.update(raw_pinch_position)
 
-        # Actualizar última posición de pinch
         if pinch_position:
             self.last_pinch_position = pinch_position
 
-        # Manejar gestos
+        handle_start = time.perf_counter()
         self.handle_gestures(gesture, pinch_position, current_time)
+        handle_dt = time.perf_counter() - handle_start
 
-        # Dibujar interfaz
+        draw_start = time.perf_counter()
         self.draw_interface(frame, gesture, pinch_position, hand_landmarks)
+        draw_dt = time.perf_counter() - draw_start
+
+        if profile is not None:
+            profile.update({
+                "detect": detect_dt,
+                "handle": handle_dt,
+                "draw_figures": draw_dt,
+                "total": time.perf_counter() - total_start,
+            })
 
         return frame

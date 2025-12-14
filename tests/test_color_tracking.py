@@ -1,8 +1,12 @@
 """Tests para color tracking en ColorPainter."""
 import math
 import numpy as np
-import cv2
 import pytest
+
+try:
+    import cv2
+except ImportError:  # pragma: no cover - entorno sin OpenCV
+    pytest.skip("OpenCV no disponible en el entorno de pruebas", allow_module_level=True)
 
 from ColorPainter import ColorPainter, HSV_PRESETS
 

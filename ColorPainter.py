@@ -1,6 +1,12 @@
-import cv2
-import numpy as np
 import math
+
+import numpy as np
+
+try:
+    import cv2
+except Exception:  # pragma: no cover - soporte en entornos sin dependencias de OpenCV
+    cv2 = None
+
 from filters import EMAFilter
 
 
@@ -93,6 +99,8 @@ class ColorPainter:
 
     def _open_hsv_calibration(self):
         """Abre la ventana de calibracion HSV."""
+        if cv2 is None:
+            raise ImportError("OpenCV no disponible para calibración HSV")
         self.hsv_calibration_mode = True
         cv2.namedWindow(self.hsv_window_name, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(self.hsv_window_name, 400, 300)
@@ -152,6 +160,8 @@ class ColorPainter:
 
     def detect_color_object(self, frame):
         """Deteccion de objeto por color HSV configurable."""
+        if cv2 is None:
+            raise ImportError("OpenCV no disponible para detección de color")
         current_time = cv2.getTickCount() / cv2.getTickFrequency()
 
         # Actualizar HSV desde trackbars si esta en modo calibracion
