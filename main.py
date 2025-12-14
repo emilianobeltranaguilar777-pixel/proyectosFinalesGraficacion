@@ -338,6 +338,19 @@ class PizarraNeon:
         elif key == ord('-'):
             new_size = self.color_painter.change_brush_size(False)
             print(f"[ ACTION ] Brush size decreased to {new_size}")
+        # Presets HSV (teclas 1-6 en modo color)
+        elif key in [ord('1'), ord('2'), ord('3'), ord('4'), ord('5'), ord('6')]:
+            preset_num = key - ord('0')
+            self.color_painter.set_hsv_preset(preset_num)
+        # Toggle calibracion HSV
+        elif key == ord('h'):
+            is_active = self.color_painter.toggle_hsv_calibration()
+            state = "ACTIVADA" if is_active else "DESACTIVADA"
+            print(f"[ HSV ] Calibracion {state}")
+        # Reset a preset por defecto
+        elif key == ord('r'):
+            self.color_painter.reset_to_default_preset()
+            print("[ HSV ] Reset a preset por defecto (AZUL)")
 
     def _procesar_teclas_gestos(self, key):
         """Procesa teclas específicas del modo gestos"""
