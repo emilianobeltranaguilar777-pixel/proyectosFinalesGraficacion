@@ -57,6 +57,8 @@ class Gesture3D:
         self.menu_state = MenuState.HIDDEN
         self.menu_position = (width // 2, height // 2)
         self.menu_radius = 200
+        self.menu_toggle_requested = False
+        self.menu_toggle_position = None
 
         # Figuras disponibles en el menú
         self.available_figures = [
@@ -235,19 +237,22 @@ class Gesture3D:
         dt = now - self.last_frame_time
         self.last_frame_time = now
 
-        if self.use_external_menu and self.external_menu_active:
-            # Solo actualizar estado de pinch sin manipular figuras ni rotación
-            if gesture == Gesture.PINCH:
-                if not self.pinch_active:
-                    self.pinch_active = True
-                    self.last_pinch_position = pinch_position
-                    self.pinch_start_position = pinch_position
-                elif pinch_position:
-                    self.last_pinch_position = pinch_position
-            else:
-                self.pinch_active = False
-                self.pinch_start_position = None
-            return
+        if self.use_external_menu:
+            self._update_menu_toggle_state(gesture, pinch_position, current_time)
+
+            if self.external_menu_active:
+                # Solo actualizar estado de pinch sin manipular figuras ni rotación
+                if gesture == Gesture.PINCH:
+                    if not self.pinch_active:
+                        self.pinch_active = True
+                        self.last_pinch_position = pinch_position
+                        self.pinch_start_position = pinch_position
+                    elif pinch_position:
+                        self.last_pinch_position = pinch_position
+                else:
+                    self.pinch_active = False
+                    self.pinch_start_position = None
+                return
 
         # Menú con VICTORY (con cooldown) - deshabilitado si se usa menú externo
         if (not self.use_external_menu and gesture == Gesture.VICTORY and
@@ -291,8 +296,26 @@ class Gesture3D:
         if (gesture == Gesture.OPEN_HAND and
                 self.selected_figure and
                 not self.pinch_active and
-                self.rotation_enabled):
+                self.rotation_enabled and
+                not self.external_menu_active):
             self.rotate_figure_continuous(dt)
+
+    def _update_menu_toggle_state(self, gesture, pinch_position, current_time):
+        """Registra toggles del menú externo usando solo el gesto VICTORY."""
+
+        if gesture == Gesture.VICTORY and current_time - self.last_victory_time > self.gesture_cooldown:
+            self.menu_toggle_requested = True
+            self.menu_toggle_position = pinch_position
+            self.last_victory_time = current_time
+
+    def consume_menu_toggle(self):
+        """Consume el toggle solicitado por gesto VICTORY."""
+
+        requested = self.menu_toggle_requested
+        position = self.menu_toggle_position
+        self.menu_toggle_requested = False
+        self.menu_toggle_position = None
+        return requested, position
 
     def handle_figure_scaling_by_fingers(self):
         """Escala suavizada basada en distancia entre dedos"""

@@ -24,8 +24,6 @@ class PizarraNeon:
         self.gesture_3d = Gesture3D(self.ancho, self.alto, use_external_menu=True)
         self.neon_menu = self._crear_neon_menu()
         self.ultimo_dt = time.perf_counter()
-        self.tiempo_mano_abierta = 0.0
-        self.tiempo_apertura_requerido = 0.4
         self.prev_pinch_activo = False
         self.ultima_pos_cursor = (self.ancho // 2, self.alto // 2)
 
@@ -67,16 +65,27 @@ class PizarraNeon:
             self.gesture_3d.delete_selected_figure()
             self.neon_menu.close()
 
-        botones = [
-            MenuButton("circle", (255, 120, 0), on_select=crear_callback("circle")),
-            MenuButton("square", (80, 255, 180), on_select=crear_callback("square")),
-            MenuButton("triangle", (255, 80, 180), on_select=crear_callback("triangle")),
-            MenuButton("delete", (60, 60, 255), on_select=eliminar_callback),
+        palette = [
+            (255, 140, 80),
+            (120, 255, 200),
+            (255, 120, 200),
+            (90, 200, 255),
+            (255, 210, 120),
+            (160, 120, 255),
         ]
+
+        botones = []
+        for idx, figura in enumerate(self.gesture_3d.available_figures):
+            color = palette[idx % len(palette)]
+            botones.append(MenuButton(figura, color, on_select=crear_callback(figura)))
+
+        botones.append(MenuButton("delete", (60, 60, 255), on_select=eliminar_callback))
 
         return NeonMenu(
             center=(self.ancho // 2, self.alto // 2),
-            radius=180,
+            radius=95,
+            button_radius=22,
+            inner_deadzone=26,
             buttons=botones,
         )
 
@@ -438,24 +447,17 @@ class PizarraNeon:
             or self.ultima_pos_cursor
         )
 
-        gesto = self.gesture_3d.current_gesture
         pinch_activo = self.gesture_3d.pinch_active
         pinch_inicio = pinch_activo and not self.prev_pinch_activo
         self.prev_pinch_activo = pinch_activo
 
-        # Apertura por mano abierta sostenida
-        if gesto == Gesture.OPEN_HAND:
-            self.tiempo_mano_abierta += dt
-            if self.tiempo_mano_abierta >= self.tiempo_apertura_requerido and not self.neon_menu.is_visible():
-                self.neon_menu.center = self.ultima_pos_cursor
+        toggled, gesture_center = self.gesture_3d.consume_menu_toggle()
+        if toggled:
+            if self.neon_menu.is_visible():
+                self.neon_menu.close()
+            else:
+                self.neon_menu.center = gesture_center or self.ultima_pos_cursor
                 self.neon_menu.open()
-                self.tiempo_mano_abierta = 0.0
-        else:
-            self.tiempo_mano_abierta = 0.0
-
-        # Cierre por puño
-        if gesto == Gesture.FIST and self.neon_menu.is_visible():
-            self.neon_menu.close()
 
         self.neon_menu.update(self.ultima_pos_cursor, pinch_inicio, dt)
 

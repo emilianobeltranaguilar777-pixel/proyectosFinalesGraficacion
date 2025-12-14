@@ -43,11 +43,11 @@ class NeonMenu:
     def __init__(
         self,
         center: Tuple[int, int] = (320, 240),
-        radius: float = 120.0,
+        radius: float = 85.0,
         buttons: Optional[Sequence[MenuButton]] = None,
-        inner_deadzone: float = 32.0,
+        inner_deadzone: float = 26.0,
         start_angle: float = -math.pi / 2,
-        button_radius: float = 28.0,
+        button_radius: float = 20.0,
         open_duration: float = 0.35,
         close_duration: float = 0.25,
         glow_intensity: float = 0.7,
@@ -73,6 +73,13 @@ class NeonMenu:
         self._hover_index: Optional[int] = None
         self._prev_selecting: bool = False
         self._time_accum: float = 0.0
+        self._cached_positions: List[Tuple[int, int]] = []
+        self._last_position_state: Tuple[Tuple[int, int], float, float, int] = (
+            self.center,
+            self.radius,
+            0.0,
+            len(self.buttons),
+        )
 
     def open(self) -> None:
         """Begin opening animation."""
@@ -145,7 +152,11 @@ class NeonMenu:
             return frame
 
         overlay = frame.copy()
-        glow_layer = np.zeros_like(frame)
+        glow_scale_factor = 0.55
+        glow_layer_small = np.zeros(
+            (max(1, int(frame.shape[0] * glow_scale_factor)), max(1, int(frame.shape[1] * glow_scale_factor)), 3),
+            dtype=np.uint8,
+        )
         scale = self._ease_out_back(self.animation)
         alpha = min(1.0, max(0.0, self.animation))
 
@@ -154,10 +165,9 @@ class NeonMenu:
             return frame
 
         sector_angle = (2 * math.pi) / num_buttons
+        positions = self._get_cached_positions(scale, num_buttons, sector_angle)
 
-        for idx, button in enumerate(self.buttons):
-            angle = self.start_angle + sector_angle * (idx + 0.5)
-            pos = self._polar_to_cartesian(angle, self.radius * scale)
+        for idx, (button, pos) in enumerate(zip(self.buttons, positions)):
 
             pulse = 0.05 * math.sin(self._time_accum * self.pulse_speed + idx)
             hover_scale = 1.0 + 0.18 * button.hover_level + pulse * button.hover_level
@@ -170,11 +180,20 @@ class NeonMenu:
             glow_color = np.clip(base_color * (1.3 + glow_boost), 0, 255)
 
             cv2.circle(overlay, pos, size, color.astype(np.uint8).tolist(), thickness=-1, lineType=cv2.LINE_AA)
-            cv2.circle(glow_layer, pos, int(size * 1.6), glow_color.astype(np.uint8).tolist(), thickness=-1, lineType=cv2.LINE_AA)
+            glow_pos = (int(pos[0] * glow_scale_factor), int(pos[1] * glow_scale_factor))
+            cv2.circle(
+                glow_layer_small,
+                glow_pos,
+                max(1, int(size * 1.1 * glow_scale_factor)),
+                glow_color.astype(np.uint8).tolist(),
+                thickness=-1,
+                lineType=cv2.LINE_AA,
+            )
             self._draw_icon(overlay, pos, size, button)
 
-        blur_size = max(3, int(self.button_radius * 0.8) | 1)
-        glow_layer = cv2.GaussianBlur(glow_layer, (blur_size, blur_size), sigmaX=0)
+        blur_kernel = max(3, int(self.button_radius * 0.6) | 1)
+        glow_layer_small = cv2.GaussianBlur(glow_layer_small, (blur_kernel, blur_kernel), sigmaX=0)
+        glow_layer = cv2.resize(glow_layer_small, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_LINEAR)
         combined = cv2.addWeighted(glow_layer, self.glow_intensity * alpha, overlay, alpha, 0)
         cv2.addWeighted(combined, 1.0, frame, 1 - alpha, 0, dst=frame)
         return frame
@@ -211,6 +230,18 @@ class NeonMenu:
         x = int(self.center[0] + math.cos(angle) * radius)
         y = int(self.center[1] + math.sin(angle) * radius)
         return (x, y)
+
+    def _get_cached_positions(
+        self, scale: float, num_buttons: int, sector_angle: float
+    ) -> List[Tuple[int, int]]:
+        key = (self.center, self.radius, round(scale, 3), num_buttons)
+        if key != self._last_position_state:
+            self._cached_positions = []
+            for idx in range(num_buttons):
+                angle = self.start_angle + sector_angle * (idx + 0.5)
+                self._cached_positions.append(self._polar_to_cartesian(angle, self.radius * scale))
+            self._last_position_state = key
+        return self._cached_positions
 
     @staticmethod
     def _ease_out_back(t: float) -> float:
