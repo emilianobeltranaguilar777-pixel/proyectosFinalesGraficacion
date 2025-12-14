@@ -4,7 +4,8 @@ import numpy as np
 import time
 import os
 from ColorPainter import ColorPainter
-from Gesture3D import Gesture3D, SelectionMode
+from Gesture3D import Gesture3D, SelectionMode, Gesture
+from neon_menu import MenuButton, NeonMenu
 
 # Configuración para Ubuntu/Wayland
 os.environ['QT_QPA_PLATFORM'] = 'xcb'
@@ -20,7 +21,13 @@ class PizarraNeon:
 
         # Inicializar módulos
         self.color_painter = ColorPainter(self.ancho, self.alto)
-        self.gesture_3d = Gesture3D(self.ancho, self.alto)
+        self.gesture_3d = Gesture3D(self.ancho, self.alto, use_external_menu=True)
+        self.neon_menu = self._crear_neon_menu()
+        self.ultimo_dt = time.perf_counter()
+        self.tiempo_mano_abierta = 0.0
+        self.tiempo_apertura_requerido = 0.4
+        self.prev_pinch_activo = False
+        self.ultima_pos_cursor = (self.ancho // 2, self.alto // 2)
 
         # Cache para optimización
         self.grid_cache = None
@@ -45,6 +52,35 @@ class PizarraNeon:
             'gris_tech': (100, 100, 120),
             'verde_seleccion': (0, 180, 0)
         }
+
+    def _crear_neon_menu(self):
+        """Configura el menú neon con callbacks de figuras."""
+
+        def crear_callback(figura):
+            def _callback(_):
+                self.gesture_3d.create_figure(figura, self.ultima_pos_cursor)
+                self.neon_menu.close()
+
+            return _callback
+
+        def eliminar_callback(_):
+            self.gesture_3d.delete_selected_figure()
+            self.neon_menu.close()
+
+        botones = [
+            MenuButton("circle", (255, 120, 0), on_select=crear_callback("circle")),
+            MenuButton("square", (80, 255, 180), on_select=crear_callback("square")),
+            MenuButton("triangle", (255, 80, 180), on_select=crear_callback("triangle")),
+            MenuButton("delete", (60, 60, 255), on_select=eliminar_callback),
+        ]
+
+        return NeonMenu(
+            center=(self.ancho // 2, self.alto // 2),
+            radius=180,
+            buttons=botones,
+            base_color=(80, 30, 120),
+            accent_color=(255, 120, 0),
+        )
 
     def inicializar(self):
         """Inicializa todos los módulos del sistema"""
@@ -294,8 +330,20 @@ class PizarraNeon:
 
         # Mostrar display de selección si hay figura seleccionada
         self.dibujar_display_seleccion(frame)
+        now = time.perf_counter()
+        dt = now - self.ultimo_dt
+        self.ultimo_dt = now
+
+        # Evitar rotación cuando el menú está activo
+        menu_activo = self.neon_menu.is_visible()
+        self.gesture_3d.set_rotation_enabled(not menu_activo)
+        self.gesture_3d.set_external_menu_active(menu_activo)
 
         frame_procesado = self.gesture_3d.process_frame(frame)
+
+        self._actualizar_neon_menu(dt)
+        self.neon_menu.draw(frame_procesado)
+
         return frame_procesado
 
     def procesar_teclas(self, key):
@@ -379,6 +427,36 @@ class PizarraNeon:
             print("[ ACTION ] Selected figure deleted")
         elif key == ord('s'):
             self.gesture_3d.toggle_scale_mode()
+
+    def _actualizar_neon_menu(self, dt):
+        """Sincroniza gestos con el menú neon sin bloquear la app."""
+
+        self.ultima_pos_cursor = (
+            self.gesture_3d.index_tip
+            or self.gesture_3d.last_pinch_position
+            or self.ultima_pos_cursor
+        )
+
+        gesto = self.gesture_3d.current_gesture
+        pinch_activo = self.gesture_3d.pinch_active
+        pinch_inicio = pinch_activo and not self.prev_pinch_activo
+        self.prev_pinch_activo = pinch_activo
+
+        # Apertura por mano abierta sostenida
+        if gesto == Gesture.OPEN_HAND:
+            self.tiempo_mano_abierta += dt
+            if self.tiempo_mano_abierta >= self.tiempo_apertura_requerido and not self.neon_menu.is_visible():
+                self.neon_menu.center = self.ultima_pos_cursor
+                self.neon_menu.open()
+                self.tiempo_mano_abierta = 0.0
+        else:
+            self.tiempo_mano_abierta = 0.0
+
+        # Cierre por puño
+        if gesto == Gesture.FIST and self.neon_menu.is_visible():
+            self.neon_menu.close()
+
+        self.neon_menu.update(self.ultima_pos_cursor, pinch_inicio, dt)
 
     def ejecutar(self):
         """Bucle principal optimizado"""

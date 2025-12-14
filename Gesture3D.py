@@ -1,8 +1,14 @@
-import cv2
 import math
 import time
-import numpy as np
 from enum import Enum
+
+import numpy as np
+
+try:
+    import cv2
+except Exception:  # pragma: no cover - soporte en entornos sin dependencias de OpenCV
+    cv2 = None
+
 from geometry_utils import rotate_points
 from filters import EMAFilter
 
@@ -26,9 +32,11 @@ class SelectionMode(Enum):
 
 
 class Gesture3D:
-    def __init__(self, width, height):
+    def __init__(self, width, height, use_external_menu=False):
         self.width = width
         self.height = height
+        self.use_external_menu = use_external_menu
+        self.external_menu_active = False
 
         # Estado de figuras
         self.figures = []
@@ -95,6 +103,7 @@ class Gesture3D:
         # Rotacion continua
         self.last_frame_time = time.perf_counter()
         self.rotation_speed = math.pi  # rad/s (180 grados por segundo)
+        self.rotation_enabled = True
 
         # Filtro EMA para suavizar pinch_position
         self.pinch_filter = EMAFilter(alpha=0.4)
@@ -148,7 +157,7 @@ class Gesture3D:
 
     def detect_gestures(self, frame):
         """Detección de gestos optimizada"""
-        if not self.mediapipe_available:
+        if cv2 is None or not self.mediapipe_available:
             return Gesture.NONE, None, None
 
         try:
@@ -226,8 +235,22 @@ class Gesture3D:
         dt = now - self.last_frame_time
         self.last_frame_time = now
 
-        # Menú con VICTORY (con cooldown)
-        if (gesture == Gesture.VICTORY and
+        if self.use_external_menu and self.external_menu_active:
+            # Solo actualizar estado de pinch sin manipular figuras ni rotación
+            if gesture == Gesture.PINCH:
+                if not self.pinch_active:
+                    self.pinch_active = True
+                    self.last_pinch_position = pinch_position
+                    self.pinch_start_position = pinch_position
+                elif pinch_position:
+                    self.last_pinch_position = pinch_position
+            else:
+                self.pinch_active = False
+                self.pinch_start_position = None
+            return
+
+        # Menú con VICTORY (con cooldown) - deshabilitado si se usa menú externo
+        if (not self.use_external_menu and gesture == Gesture.VICTORY and
                 current_time - self.last_victory_time > self.gesture_cooldown):
             self.menu_state = MenuState.VISIBLE if self.menu_state == MenuState.HIDDEN else MenuState.HIDDEN
             if pinch_position:
@@ -267,7 +290,8 @@ class Gesture3D:
         # Rotacion continua con mano abierta (MUTEX: no rotar si PINCH activo)
         if (gesture == Gesture.OPEN_HAND and
                 self.selected_figure and
-                not self.pinch_active):
+                not self.pinch_active and
+                self.rotation_enabled):
             self.rotate_figure_continuous(dt)
 
     def handle_figure_scaling_by_fingers(self):
@@ -306,6 +330,16 @@ class Gesture3D:
             return 1 + (scale_factor - 1) * 0.7  # Más suave al agrandar
         else:
             return 1 - (1 - scale_factor) * 0.5  # Más suave al reducir
+
+    def set_rotation_enabled(self, enabled: bool):
+        """Habilita o deshabilita la rotación continua de figuras."""
+
+        self.rotation_enabled = enabled
+
+    def set_external_menu_active(self, active: bool):
+        """Indica si un menú externo está activo para evitar conflictos."""
+
+        self.external_menu_active = active
 
     def handle_menu_selection(self, position):
         """Detección de ítem del menú mejorada"""
@@ -692,7 +726,7 @@ class Gesture3D:
             cv2.circle(frame, pinch_position, 6, color, -1, cv2.LINE_AA)
 
         # Menú
-        if self.menu_state == MenuState.VISIBLE:
+        if not self.use_external_menu and self.menu_state == MenuState.VISIBLE:
             self.draw_enhanced_menu(frame)
 
         # Figuras
@@ -708,6 +742,8 @@ class Gesture3D:
 
     def process_frame(self, frame):
         """Procesar frame principal optimizado"""
+        if cv2 is None:
+            return frame
         current_time = time.time()
 
         # Detectar gestos (pinch_position raw)
