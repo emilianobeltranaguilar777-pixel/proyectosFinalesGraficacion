@@ -4,6 +4,10 @@ from pathlib import Path
 import sys
 import types
 
+import sys
+import types
+from pathlib import Path
+
 import pytest
 import numpy as np
 

@@ -767,27 +767,38 @@ class Gesture3D:
                 self.mp_hands.HAND_CONNECTIONS
             )
 
-    def process_frame(self, frame):
-        """Procesar frame principal optimizado"""
+    def process_frame(self, frame, profile=None):
+        """Procesar frame principal optimizado."""
         if cv2 is None:
             return frame
+
+        total_start = time.perf_counter()
         current_time = time.time()
 
-        # Detectar gestos (pinch_position raw)
+        detect_start = time.perf_counter()
         gesture, raw_pinch_position, hand_landmarks = self.detect_gestures(frame)
+        detect_dt = time.perf_counter() - detect_start
         self.current_gesture = gesture
 
-        # Aplicar filtro EMA a pinch_position para reducir jitter
         pinch_position = self.pinch_filter.update(raw_pinch_position)
 
-        # Actualizar última posición de pinch
         if pinch_position:
             self.last_pinch_position = pinch_position
 
-        # Manejar gestos
+        handle_start = time.perf_counter()
         self.handle_gestures(gesture, pinch_position, current_time)
+        handle_dt = time.perf_counter() - handle_start
 
-        # Dibujar interfaz
+        draw_start = time.perf_counter()
         self.draw_interface(frame, gesture, pinch_position, hand_landmarks)
+        draw_dt = time.perf_counter() - draw_start
+
+        if profile is not None:
+            profile.update({
+                "detect": detect_dt,
+                "handle": handle_dt,
+                "draw_figures": draw_dt,
+                "total": time.perf_counter() - total_start,
+            })
 
         return frame

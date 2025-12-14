@@ -74,11 +74,12 @@ class NeonMenu:
         self._prev_selecting: bool = False
         self._time_accum: float = 0.0
         self._cached_positions: List[Tuple[int, int]] = []
-        self._last_position_state: Tuple[Tuple[int, int], float, float, int] = (
+        self._last_position_state: Tuple[Tuple[int, int], float, float, int, float] = (
             self.center,
             self.radius,
             0.0,
             len(self.buttons),
+            self.start_angle,
         )
 
     def open(self) -> None:
@@ -151,51 +152,46 @@ class NeonMenu:
         if self.animation <= 0.0:
             return frame
 
-        overlay = frame.copy()
-        glow_scale_factor = 0.55
-        glow_layer_small = np.zeros(
-            (max(1, int(frame.shape[0] * glow_scale_factor)), max(1, int(frame.shape[1] * glow_scale_factor)), 3),
-            dtype=np.uint8,
-        )
-        scale = self._ease_out_back(self.animation)
-        alpha = min(1.0, max(0.0, self.animation))
-
         num_buttons = len(self.buttons)
         if num_buttons == 0:
             return frame
 
+        scale = self._ease_out_back(self.animation)
         sector_angle = (2 * math.pi) / num_buttons
         positions = self._get_cached_positions(scale, num_buttons, sector_angle)
 
+        # Fondo del menú (círculo base y contorno delgado)
+        base_radius = max(12, int(self.radius * 0.45 * scale))
+        cv2.circle(frame, self.center, base_radius, (18, 18, 30), thickness=-1, lineType=cv2.LINE_AA)
+        cv2.circle(frame, self.center, base_radius, (70, 120, 200), thickness=1, lineType=cv2.LINE_AA)
+
         for idx, (button, pos) in enumerate(zip(self.buttons, positions)):
-
             pulse = 0.05 * math.sin(self._time_accum * self.pulse_speed + idx)
-            hover_scale = 1.0 + 0.18 * button.hover_level + pulse * button.hover_level
-            flash_scale = 1.0 + 0.25 * button.flash_level
-            size = int(self.button_radius * hover_scale * flash_scale)
+            hover_scale = 1.0 + 0.14 * button.hover_level + pulse * button.hover_level
+            flash_scale = 1.0 + 0.18 * button.flash_level
+            size = max(6, int(self.button_radius * scale * hover_scale * flash_scale))
 
-            base_color = np.array(button.color, dtype=np.float32)
-            glow_boost = 0.4 * button.hover_level + 0.8 * button.flash_level
-            color = np.clip(base_color * (1.0 + 0.35 * button.hover_level) + 120 * button.flash_level, 0, 255)
-            glow_color = np.clip(base_color * (1.3 + glow_boost), 0, 255)
-
-            cv2.circle(overlay, pos, size, color.astype(np.uint8).tolist(), thickness=-1, lineType=cv2.LINE_AA)
-            glow_pos = (int(pos[0] * glow_scale_factor), int(pos[1] * glow_scale_factor))
-            cv2.circle(
-                glow_layer_small,
-                glow_pos,
-                max(1, int(size * 1.1 * glow_scale_factor)),
-                glow_color.astype(np.uint8).tolist(),
-                thickness=-1,
-                lineType=cv2.LINE_AA,
+            base_r, base_g, base_b = button.color
+            intensity_boost = 1.0 + 0.25 * button.hover_level + 0.6 * button.flash_level
+            color = (
+                min(255, int(base_r * intensity_boost + 40 * button.flash_level)),
+                min(255, int(base_g * intensity_boost + 40 * button.flash_level)),
+                min(255, int(base_b * intensity_boost + 40 * button.flash_level)),
             )
-            self._draw_icon(overlay, pos, size, button)
 
-        blur_kernel = max(3, int(self.button_radius * 0.6) | 1)
-        glow_layer_small = cv2.GaussianBlur(glow_layer_small, (blur_kernel, blur_kernel), sigmaX=0)
-        glow_layer = cv2.resize(glow_layer_small, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_LINEAR)
-        combined = cv2.addWeighted(glow_layer, self.glow_intensity * alpha, overlay, alpha, 0)
-        cv2.addWeighted(combined, 1.0, frame, 1 - alpha, 0, dst=frame)
+            outer_color = (
+                min(255, int(color[0] * 0.8 + 30)),
+                min(255, int(color[1] * 0.8 + 30)),
+                min(255, int(color[2] * 0.8 + 30)),
+            )
+
+            cv2.circle(frame, pos, size, color, thickness=-1, lineType=cv2.LINE_AA)
+            if button.hover_level > 0.05 or button.flash_level > 0.0:
+                cv2.circle(frame, pos, int(size * 1.3), outer_color, thickness=2, lineType=cv2.LINE_AA)
+                cv2.circle(frame, pos, int(size * 1.55), outer_color, thickness=1, lineType=cv2.LINE_AA)
+
+            self._draw_icon(frame, pos, size, button)
+
         return frame
 
     def _update_animation(self, dt: float) -> None:
@@ -234,7 +230,7 @@ class NeonMenu:
     def _get_cached_positions(
         self, scale: float, num_buttons: int, sector_angle: float
     ) -> List[Tuple[int, int]]:
-        key = (self.center, self.radius, round(scale, 3), num_buttons)
+        key = (self.center, self.radius, round(scale, 3), num_buttons, self.start_angle)
         if key != self._last_position_state:
             self._cached_positions = []
             for idx in range(num_buttons):

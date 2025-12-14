@@ -1,4 +1,7 @@
 import math
+import types
+
+import numpy as np
 
 from neon_menu import MenuButton, MenuState, NeonMenu
 
@@ -82,3 +85,32 @@ def test_hover_levels_smoothly_adjust():
 
     menu.update((100, 100), False, 0.1)
     assert menu.buttons[0].hover_level < hover_after_first
+
+
+def test_draw_fast_path_does_not_use_blur(monkeypatch):
+    frame = np.zeros((120, 120, 3), dtype=np.uint8)
+
+    def fail(*_args, **_kwargs):  # pragma: no cover - failure guard
+        raise AssertionError("Blur or full-frame blend should not be called")
+
+    fake_cv2 = types.SimpleNamespace(
+        LINE_AA=1,
+        FONT_HERSHEY_SIMPLEX=0,
+        circle=lambda img, *args, **kwargs: img,
+        polylines=lambda img, *args, **kwargs: img,
+        line=lambda img, *args, **kwargs: img,
+        rectangle=lambda img, *args, **kwargs: img,
+        putText=lambda img, *args, **kwargs: img,
+        GaussianBlur=fail,
+        addWeighted=fail,
+        resize=fail,
+    )
+
+    monkeypatch.setattr("neon_menu.cv2", fake_cv2)
+
+    menu = NeonMenu(buttons=[MenuButton("circle", (255, 0, 0))])
+    menu.state = MenuState.VISIBLE
+    menu.animation = 1.0
+
+    result = menu.draw(frame)
+    assert result is frame
