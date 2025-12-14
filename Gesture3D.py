@@ -3,6 +3,7 @@ import math
 import time
 import numpy as np
 from enum import Enum
+from geometry_utils import rotate_points
 
 
 class Gesture(Enum):
@@ -89,6 +90,10 @@ class Gesture3D:
         self.last_victory_time = 0.0
         self.last_open_hand_time = 0.0
         self.gesture_cooldown = 0.5
+
+        # Rotacion continua
+        self.last_frame_time = time.perf_counter()
+        self.rotation_speed = math.pi  # rad/s (180 grados por segundo)
 
     def _initialize_mediapipe(self):
         """Inicializa MediaPipe de forma segura"""
@@ -212,6 +217,11 @@ class Gesture3D:
 
     def handle_gestures(self, gesture, pinch_position, current_time):
         """Manejo de gestos optimizado"""
+        # Calcular deltaTime para rotacion continua
+        now = time.perf_counter()
+        dt = now - self.last_frame_time
+        self.last_frame_time = now
+
         # Menú con VICTORY (con cooldown)
         if (gesture == Gesture.VICTORY and
                 current_time - self.last_victory_time > self.gesture_cooldown):
@@ -250,11 +260,11 @@ class Gesture3D:
             self.pinch_active = False
             self.pinch_start_position = None
 
-        # Rotación con mano abierta
-        if (gesture == Gesture.OPEN_HAND and self.selected_figure and
-                current_time - self.last_open_hand_time > 0.15):  # Más lento
-            self.rotate_figure()
-            self.last_open_hand_time = current_time
+        # Rotacion continua con mano abierta (MUTEX: no rotar si PINCH activo)
+        if (gesture == Gesture.OPEN_HAND and
+                self.selected_figure and
+                not self.pinch_active):
+            self.rotate_figure_continuous(dt)
 
     def handle_figure_scaling_by_fingers(self):
         """Escala suavizada basada en distancia entre dedos"""
@@ -372,7 +382,7 @@ class Gesture3D:
             'position': position,
             'size': 60,  # Tamaño inicial aumentado
             'color': self.colors[self.current_color_index],
-            'rotation': 0,
+            'rotation': 0.0,  # Radianes
             'selection_color': (255, 255, 80),
             'creation_time': time.time(),
             'id': len(self.figures)  # ID único
@@ -398,9 +408,15 @@ class Gesture3D:
             self.selected_figure['position'] = (x, y)
 
     def rotate_figure(self):
-        """Rotar figura seleccionada suavemente"""
+        """Rotar figura seleccionada (legacy, incremento fijo)"""
         if self.selected_figure:
-            self.selected_figure['rotation'] = (self.selected_figure['rotation'] + 6) % 360  # Más lento
+            self.selected_figure['rotation'] = (self.selected_figure['rotation'] + 6) % 360
+
+    def rotate_figure_continuous(self, dt: float):
+        """Rotar figura seleccionada de forma continua basada en deltaTime."""
+        if self.selected_figure:
+            delta_angle = self.rotation_speed * dt
+            self.selected_figure['rotation'] += delta_angle  # Más lento
 
     def delete_selected_figure(self):
         """Eliminar figura seleccionada"""
@@ -558,48 +574,103 @@ class Gesture3D:
         pts = np.array(points, np.int32)
         cv2.polylines(frame, [pts], True, color, thickness, cv2.LINE_AA)
 
+    def _draw_star_rotated(self, frame, center, size, color, thickness, angle_rad):
+        """Dibujar una estrella con rotacion 2D real."""
+        x, y = center
+        points = []
+        for i in range(10):
+            base_angle = math.pi / 2 + i * math.pi / 5
+            r = size if i % 2 == 0 else size / 2
+            points.append([x + r * math.cos(base_angle), y + r * math.sin(base_angle)])
+
+        pts = np.array(points, dtype=np.float64)
+        rotated_pts = rotate_points(pts, center, angle_rad)
+        cv2.polylines(frame, [rotated_pts], True, color, thickness, cv2.LINE_AA)
+
+    def _draw_heart_rotated(self, frame, center, size, color, thickness, angle_rad):
+        """Dibujar un corazon con rotacion 2D real (aproximado con poligono)."""
+        x, y = center
+        points = []
+
+        # Generar puntos del corazon como curva parametrica
+        num_points = 30
+        for i in range(num_points):
+            t = 2 * math.pi * i / num_points
+            # Ecuacion parametrica del corazon
+            px = 16 * (math.sin(t) ** 3)
+            py = -(13 * math.cos(t) - 5 * math.cos(2*t) - 2 * math.cos(3*t) - math.cos(4*t))
+            # Escalar y centrar
+            scale = size / 18.0
+            points.append([x + px * scale, y + py * scale])
+
+        pts = np.array(points, dtype=np.float64)
+        rotated_pts = rotate_points(pts, center, angle_rad)
+        cv2.polylines(frame, [rotated_pts], True, color, thickness, cv2.LINE_AA)
+
+    def _draw_hexagon_rotated(self, frame, center, size, color, thickness, angle_rad):
+        """Dibujar un hexagono con rotacion 2D real."""
+        x, y = center
+        points = []
+        for i in range(6):
+            base_angle = math.pi / 6 + i * math.pi / 3
+            points.append([x + size * math.cos(base_angle), y + size * math.sin(base_angle)])
+
+        pts = np.array(points, dtype=np.float64)
+        rotated_pts = rotate_points(pts, center, angle_rad)
+        cv2.polylines(frame, [rotated_pts], True, color, thickness, cv2.LINE_AA)
+
     def draw_figures(self, frame):
         """Dibujar todas las figuras optimizado"""
         for figure in self.figures:
             self._draw_single_figure(frame, figure)
 
     def _draw_single_figure(self, frame, figure):
-        """Dibujar una figura individual"""
+        """Dibujar una figura individual con rotacion 2D real."""
         color = figure['color']
         pos = figure['position']
         size = figure['size']
+        angle_rad = figure['rotation']  # Ya en radianes
 
         # Resaltar figura seleccionada
         if figure is self.selected_figure:
             selection_color = figure.get('selection_color', (255, 255, 80))
             cv2.circle(frame, pos, size + 8, selection_color, 2, cv2.LINE_AA)
 
-        # Dibujar figura según tipo
+        # Dibujar figura segun tipo CON ROTACION REAL
         if figure['type'] == 'circle':
+            # Circulo no necesita rotacion visual, pero dibujamos indicador
             cv2.circle(frame, pos, size, color, 3, cv2.LINE_AA)
         elif figure['type'] == 'square':
-            cv2.rectangle(frame, (pos[0] - size, pos[1] - size),
-                          (pos[0] + size, pos[1] + size), color, 3, cv2.LINE_AA)
+            # Generar vertices del cuadrado
+            pts = np.array([
+                [pos[0] - size, pos[1] - size],
+                [pos[0] + size, pos[1] - size],
+                [pos[0] + size, pos[1] + size],
+                [pos[0] - size, pos[1] + size]
+            ], dtype=np.float64)
+            rotated_pts = rotate_points(pts, pos, angle_rad)
+            cv2.polylines(frame, [rotated_pts], True, color, 3, cv2.LINE_AA)
         elif figure['type'] == 'triangle':
             height = int(size * 1.5)
             pts = np.array([
                 [pos[0], pos[1] - height // 2],
                 [pos[0] - size, pos[1] + height // 2],
                 [pos[0] + size, pos[1] + height // 2]
-            ], np.int32)
-            cv2.polylines(frame, [pts], True, color, 3, cv2.LINE_AA)
+            ], dtype=np.float64)
+            rotated_pts = rotate_points(pts, pos, angle_rad)
+            cv2.polylines(frame, [rotated_pts], True, color, 3, cv2.LINE_AA)
         elif figure['type'] == 'star':
-            self._draw_star(frame, pos, size, color, 3)
+            self._draw_star_rotated(frame, pos, size, color, 3, angle_rad)
         elif figure['type'] == 'heart':
-            self._draw_heart(frame, pos, size, color, 3)
+            self._draw_heart_rotated(frame, pos, size, color, 3, angle_rad)
         elif figure['type'] == 'hexagon':
-            self._draw_hexagon(frame, pos, size, color, 3)
+            self._draw_hexagon_rotated(frame, pos, size, color, 3, angle_rad)
 
-        # Punto central y línea de rotación
+        # Punto central
         cv2.circle(frame, pos, 3, color, -1, cv2.LINE_AA)
 
-        if figure['rotation'] != 0:
-            angle_rad = math.radians(figure['rotation'])
+        # Linea indicadora de rotacion (para todas las figuras)
+        if angle_rad != 0:
             end_x = int(pos[0] + size * 0.8 * math.cos(angle_rad))
             end_y = int(pos[1] + size * 0.8 * math.sin(angle_rad))
             cv2.line(frame, pos, (end_x, end_y), color, 2, cv2.LINE_AA)
