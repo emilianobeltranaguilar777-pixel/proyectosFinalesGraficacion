@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import math
+from filters import EMAFilter
 
 
 class ColorPainter:
@@ -32,6 +33,9 @@ class ColorPainter:
         # Efectos de pintura
         self.paint_effects = True
         self.trail_particles = []
+
+        # Filtro EMA para suavizar centroide
+        self.centroid_filter = EMAFilter(alpha=0.4)
 
     def detect_blue_object(self, frame):
         """Detección optimizada de objeto azul con cache"""
@@ -155,6 +159,7 @@ class ColorPainter:
         self.canvas = np.zeros((self.height, self.width, 3), dtype=np.uint8)
         self.last_pos = None
         self.trail_particles.clear()
+        self.centroid_filter.reset()
 
     def change_brush_color(self):
         """Cambiar al siguiente color de la paleta"""
@@ -231,8 +236,11 @@ class ColorPainter:
         # Actualizar efectos de pintura
         self.update_paint_effects(1.0 / 30.0)
 
-        # Detectar objeto azul
-        current_pos, contour = self.detect_blue_object(frame)
+        # Detectar objeto azul (centroide raw)
+        raw_pos, contour = self.detect_blue_object(frame)
+
+        # Aplicar filtro EMA para suavizar centroide
+        current_pos = self.centroid_filter.update(raw_pos)
 
         # Dibujar en el canvas si se detecta objeto
         if current_pos:
