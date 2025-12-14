@@ -122,7 +122,7 @@ class Gesture3D:
             self.mp_draw = mp.solutions.drawing_utils
             self.mediapipe_available = True
             print("[INFO] MediaPipe inicializado correctamente")
-        except ImportError:
+        except Exception:
             print("[WARN] MediaPipe no disponible, solo interfaz sin gestos.")
             self.mediapipe_available = False
 
@@ -340,6 +340,10 @@ class Gesture3D:
         """Indica si un menú externo está activo para evitar conflictos."""
 
         self.external_menu_active = active
+        if active:
+            self.menu_state = MenuState.HIDDEN
+            self.pinch_active = False
+            self.pinch_start_position = None
 
     def handle_menu_selection(self, position):
         """Detección de ítem del menú mejorada"""

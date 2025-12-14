@@ -78,8 +78,6 @@ class PizarraNeon:
             center=(self.ancho // 2, self.alto // 2),
             radius=180,
             buttons=botones,
-            base_color=(80, 30, 120),
-            accent_color=(255, 120, 0),
         )
 
     def inicializar(self):
@@ -342,6 +340,9 @@ class PizarraNeon:
         frame_procesado = self.gesture_3d.process_frame(frame)
 
         self._actualizar_neon_menu(dt)
+        menu_activo = self.neon_menu.is_visible()
+        self.gesture_3d.set_rotation_enabled(not menu_activo)
+        self.gesture_3d.set_external_menu_active(menu_activo)
         self.neon_menu.draw(frame_procesado)
 
         return frame_procesado
