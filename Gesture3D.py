@@ -4,6 +4,7 @@ import time
 import numpy as np
 from enum import Enum
 from geometry_utils import rotate_points
+from filters import EMAFilter
 
 
 class Gesture(Enum):
@@ -94,6 +95,9 @@ class Gesture3D:
         # Rotacion continua
         self.last_frame_time = time.perf_counter()
         self.rotation_speed = math.pi  # rad/s (180 grados por segundo)
+
+        # Filtro EMA para suavizar pinch_position
+        self.pinch_filter = EMAFilter(alpha=0.4)
 
     def _initialize_mediapipe(self):
         """Inicializa MediaPipe de forma segura"""
@@ -706,9 +710,12 @@ class Gesture3D:
         """Procesar frame principal optimizado"""
         current_time = time.time()
 
-        # Detectar gestos
-        gesture, pinch_position, hand_landmarks = self.detect_gestures(frame)
+        # Detectar gestos (pinch_position raw)
+        gesture, raw_pinch_position, hand_landmarks = self.detect_gestures(frame)
         self.current_gesture = gesture
+
+        # Aplicar filtro EMA a pinch_position para reducir jitter
+        pinch_position = self.pinch_filter.update(raw_pinch_position)
 
         # Actualizar última posición de pinch
         if pinch_position:
