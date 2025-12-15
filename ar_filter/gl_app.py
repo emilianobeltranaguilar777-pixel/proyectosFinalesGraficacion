@@ -242,5 +242,14 @@ class ARFilterApp:
 
 def run_ar_filter():
     """Entry point to run the AR filter standalone."""
+    import cv2
+
+    cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+    if not cap.isOpened():
+        print("[ AR FILTER ERROR ] Camera not available (cv2.VideoCapture failed).")
+        cap.release()
+        return
+    cap.release()
+
     app = ARFilterApp()
     app.run()

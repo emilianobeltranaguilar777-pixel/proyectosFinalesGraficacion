@@ -21,20 +21,21 @@ LANDMARK_MOUTH_RIGHT = 291
 
 
 def _as_landmark_list(landmarks: Sequence) -> Sequence:
-    """Normalizes MediaPipe landmark containers into a sequence."""
-    if landmark_pb2 is not None and isinstance(landmarks, landmark_pb2.NormalizedLandmarkList):
-        return list(landmarks.landmark)
+    if landmarks is None:
+        return None
     if hasattr(landmarks, "landmark"):
-        return list(landmarks.landmark)
-    if isinstance(landmarks, (list, tuple)):
-        return landmarks
-    raise TypeError("Unsupported landmark container type")
+        return landmarks.landmark
+    return landmarks
 
 
 def _point(landmarks: Sequence, index: int) -> Tuple[float, float]:
-    normalized = _as_landmark_list(landmarks)
-    landmark = normalized[index]
-    return float(landmark.x), float(landmark.y)
+    lm = _as_landmark_list(landmarks)
+    if lm is None:
+        return None
+    if index < 0 or index >= len(lm):
+        return None
+    p = lm[index]
+    return (p.x, p.y)
 
 
 def _distance(a: Tuple[float, float], b: Tuple[float, float]) -> float:
@@ -43,41 +44,42 @@ def _distance(a: Tuple[float, float], b: Tuple[float, float]) -> float:
 
 def face_width(landmarks: Sequence) -> float:
     """Returns the normalized face width using cheek landmarks."""
-    normalized = _as_landmark_list(landmarks)
-    left = _point(normalized, LANDMARK_LEFT_CHEEK)
-    right = _point(normalized, LANDMARK_RIGHT_CHEEK)
+    left = _point(landmarks, LANDMARK_LEFT_CHEEK)
+    right = _point(landmarks, LANDMARK_RIGHT_CHEEK)
+    if left is None or right is None:
+        return 0.0
     return _distance(left, right)
 
 
 def mouth_open_ratio(landmarks: Sequence) -> float:
     """Computes mouth opening normalized by face width."""
-    normalized = _as_landmark_list(landmarks)
-    top = _point(normalized, LANDMARK_UPPER_LIP)
-    bottom = _point(normalized, LANDMARK_LOWER_LIP)
+    top = _point(landmarks, LANDMARK_UPPER_LIP)
+    bottom = _point(landmarks, LANDMARK_LOWER_LIP)
+    if top is None or bottom is None:
+        return 0.0
     opening = _distance(top, bottom)
-    width = max(face_width(normalized), 1e-6)
+    width = max(face_width(landmarks), 1e-6)
     return opening / width
 
 
 def halo_radius(landmarks: Sequence, scale: float = 1.1) -> float:
     """Determines halo radius from face width."""
-    normalized = _as_landmark_list(landmarks)
-    return face_width(normalized) * scale
+    return face_width(landmarks) * scale
 
 
 def head_position(landmarks: Sequence) -> Tuple[float, float]:
     """Returns a normalized anchor position near the forehead."""
-    normalized = _as_landmark_list(landmarks)
-    return _point(normalized, LANDMARK_FOREHEAD)
+    return _point(landmarks, LANDMARK_FOREHEAD)
 
 
 def mouth_reference_points(landmarks: Sequence) -> Tuple[Tuple[float, float], Tuple[float, float], float]:
     """Provides mouth corner positions and vertical center for anchoring quads."""
-    normalized = _as_landmark_list(landmarks)
-    left = _point(normalized, LANDMARK_MOUTH_LEFT)
-    right = _point(normalized, LANDMARK_MOUTH_RIGHT)
-    top = _point(normalized, LANDMARK_UPPER_LIP)
-    bottom = _point(normalized, LANDMARK_LOWER_LIP)
+    left = _point(landmarks, LANDMARK_MOUTH_LEFT)
+    right = _point(landmarks, LANDMARK_MOUTH_RIGHT)
+    top = _point(landmarks, LANDMARK_UPPER_LIP)
+    bottom = _point(landmarks, LANDMARK_LOWER_LIP)
+    if None in (left, right, top, bottom):
+        return (0.0, 0.0), (0.0, 0.0), 0.0
     center_y = (top[1] + bottom[1]) * 0.5
     return left, right, center_y
 
