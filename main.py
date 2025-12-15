@@ -79,6 +79,9 @@ class PizarraNeon:
         self.ultimo_grid_update = 0
         self.grid_update_interval = 0.3
 
+        # Estado de bloqueo de escala
+        self.scale_lock_active = False
+
         # Paleta de colores
         self.colores = {
             'azul_electrico': (255, 120, 0),
@@ -239,6 +242,36 @@ class PizarraNeon:
             elif i == 3:  # Bottom-right
                 cv2.line(frame, (x - length, y), (x, y), color, thickness, cv2.LINE_AA)
                 cv2.line(frame, (x, y - length), (x, y), color, thickness, cv2.LINE_AA)
+
+    def _get_scale_zone_rects(self):
+        """Devuelve los rectángulos de zona de escala (left, right)."""
+        x_left = 0
+        x_center_left = int(self.ancho * (1 / 3))
+        x_center_right = int(self.ancho * (2 / 3))
+        y_top = int(self.alto * 0.15)
+        y_bottom = int(self.alto * 0.85)
+        left_rect = (x_left, y_top, x_center_left, y_bottom)
+        right_rect = (x_center_right, y_top, self.ancho, y_bottom)
+        return left_rect, right_rect
+
+    def _draw_scale_lock_overlay(self, frame, left_rect, right_rect, alpha=0.3):
+        """Dibuja las zonas de escala cuando el modo está activo."""
+        overlay = frame.copy()
+        fill_color = (200, 80, 30)
+        border_color = (255, 160, 90)
+
+        def _draw_zone(rect, label):
+            x1, y1, x2, y2 = rect
+            overlay[y1:y2, x1:x2] = fill_color
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), border_color, 2)
+            cv2.putText(overlay, label, (x1 + 20, y1 + 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, border_color, 2, cv2.LINE_AA)
+
+        _draw_zone(left_rect, "- SIZE")
+        _draw_zone(right_rect, "+ SIZE")
+        blended = (overlay.astype(np.float32) * alpha + frame.astype(np.float32) * (1 - alpha)).astype(np.uint8)
+        frame[:] = blended
+        cv2.putText(frame, "MODE: SCALE (PINCH in blue zones)", (int(self.ancho * 0.25), 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 1, cv2.LINE_AA)
 
     def dibujar_display_seleccion(self, frame):
         """Display verde que muestra la figura seleccionada"""
@@ -430,10 +463,6 @@ class PizarraNeon:
         self.dibujar_display_seleccion(frame)
 
         # === STEP 2: Gesture detection and figure drawing ===
-        menu_activo = self.neon_menu.is_visible()
-        self.gesture_3d.set_rotation_enabled(not menu_activo)
-        self.gesture_3d.set_external_menu_active(menu_activo)
-
         profile = {} if self.debug_perf else None
 
         detect_start = time.perf_counter()
@@ -445,25 +474,47 @@ class PizarraNeon:
         if pinch_position:
             self.gesture_3d.last_pinch_position = pinch_position
 
+        self.scale_lock_active = (
+            self.gesture_3d.selection_mode == SelectionMode.SCALE
+            and self.gesture_3d.selected_figure is not None
+        )
+
+        if self.scale_lock_active and self.neon_menu.is_visible():
+            self.neon_menu.close()
+
+        menu_activo = self.neon_menu.is_visible()
+        self.gesture_3d.set_rotation_enabled(not (menu_activo or self.scale_lock_active))
+        self.gesture_3d.set_external_menu_active(menu_activo)
+
+        left_rect = right_rect = None
         handle_start = time.perf_counter()
-        self.gesture_3d.handle_gestures(gesture, pinch_position, time.time())
+        if self.scale_lock_active:
+            left_rect, right_rect = self._get_scale_zone_rects()
+            self._manejar_escala_bloqueada(gesture, pinch_position, dt, left_rect, right_rect)
+        else:
+            self.gesture_3d.handle_gestures(gesture, pinch_position, time.time())
         handle_dt = time.perf_counter() - handle_start
 
         # Draw figures (Gesture3D internal UI: figures, landmarks, pinch cursor)
         draw_start = time.perf_counter()
         self.gesture_3d.draw_interface(frame, gesture, pinch_position, hand_landmarks)
+        if self.scale_lock_active and left_rect and right_rect:
+            self._draw_scale_lock_overlay(frame, left_rect, right_rect)
         draw_dt = time.perf_counter() - draw_start
 
         # === STEP 3: Update and draw NeonMenu ===
-        update_start = time.perf_counter()
-        self._actualizar_neon_menu(dt)
-        menu_update_dt = time.perf_counter() - update_start
+        menu_update_dt = 0.0
+        menu_draw_dt = 0.0
+        if not self.scale_lock_active:
+            update_start = time.perf_counter()
+            self._actualizar_neon_menu(dt)
+            menu_update_dt = time.perf_counter() - update_start
 
-        menu_draw_start = time.perf_counter()
-        # ONLY draw menu here - nowhere else
-        if self.neon_menu.is_visible():
-            self.neon_menu.draw(frame)
-        menu_draw_dt = time.perf_counter() - menu_draw_start
+            menu_draw_start = time.perf_counter()
+            # ONLY draw menu here - nowhere else
+            if self.neon_menu.is_visible():
+                self.neon_menu.draw(frame)
+            menu_draw_dt = time.perf_counter() - menu_draw_start
 
         # === STEP 4: Debug overlay (if enabled) ===
         if self.debug_perf:
@@ -534,6 +585,15 @@ class PizarraNeon:
         """Procesa teclas especificas del modo gestos"""
         posicion_central = (self.ancho // 2, self.alto // 2)
 
+        if self.scale_lock_active and key not in (ord('e'), ord('E'), ord('s')):
+            # Solo permitir salida de modo escala o toggle explicito
+            return
+
+        if key in (ord('e'), ord('E')) and self.gesture_3d.selection_mode == SelectionMode.SCALE:
+            self.gesture_3d.toggle_scale_mode()
+            self.scale_lock_active = False
+            return
+
         if key == ord('1'):
             self.gesture_3d.create_figure_by_key('circle', posicion_central)
             print("[ ACTION ] Circle created")
@@ -584,6 +644,22 @@ class PizarraNeon:
         menu_activo = self.neon_menu.is_visible()
         self.gesture_3d.set_rotation_enabled(not menu_activo)
         self.gesture_3d.set_external_menu_active(menu_activo)
+
+    def _manejar_escala_bloqueada(self, gesture, pinch_position, dt, left_rect, right_rect):
+        """Gestiona la interacción cuando el modo escala está bloqueado."""
+
+        if gesture == Gesture.PINCH:
+            if not self.gesture_3d.pinch_active:
+                self.gesture_3d.pinch_active = True
+            if pinch_position:
+                self.gesture_3d.last_pinch_position = pinch_position
+                self.gesture_3d.handle_figure_scaling_by_spatial(pinch_position, dt, left_rect, right_rect)
+        else:
+            if self.gesture_3d.pinch_active:
+                self.gesture_3d.reset_spatial_scale_state()
+                self.gesture_3d.reset_angular_scale_state()
+            self.gesture_3d.pinch_active = False
+            self.gesture_3d.pinch_start_position = None
 
     def ejecutar(self):
         """Bucle principal optimizado"""

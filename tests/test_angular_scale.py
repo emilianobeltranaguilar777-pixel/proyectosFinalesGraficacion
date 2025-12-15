@@ -9,41 +9,14 @@ These tests verify the angular scaling behavior:
 - Scaling does not affect rotation
 """
 import math
-import sys
-import types
+from importlib import import_module
 
 import numpy as np
 import pytest
 
 
-def _install_fake_cv2():
-    """Install minimal cv2 stub for headless testing."""
-    fake_cv2 = types.SimpleNamespace(
-        LINE_AA=1,
-        FONT_HERSHEY_SIMPLEX=0,
-        WINDOW_NORMAL=0,
-        COLOR_BGR2RGB=0,
-    )
-
-    def _return_img(img, *_, **__):
-        return img
-
-    fake_cv2.putText = _return_img
-    fake_cv2.line = _return_img
-    fake_cv2.circle = _return_img
-    fake_cv2.rectangle = _return_img
-    fake_cv2.polylines = _return_img
-    fake_cv2.ellipse = _return_img
-    fake_cv2.cvtColor = lambda img, *_args, **_kwargs: img
-    fake_cv2.GaussianBlur = lambda img, *_args, **_kwargs: img
-    fake_cv2.addWeighted = lambda src1, alpha, src2, beta, gamma, dst=None: src1
-    fake_cv2.resize = lambda img, size, interpolation=None: np.zeros((size[1], size[0], 3), dtype=np.uint8)
-    fake_cv2.flip = _return_img
-
-    sys.modules["cv2"] = fake_cv2
-
-
 # Install fake cv2 before importing Gesture3D
+_install_fake_cv2 = import_module("tests.conftest")._install_fake_cv2
 _install_fake_cv2()
 
 from Gesture3D import Gesture3D, SelectionMode

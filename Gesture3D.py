@@ -80,14 +80,13 @@ class Gesture3D:
         self.size_smoothing = 0.2
         self.previous_sizes = {}
 
-        # === ANGULAR RING SCALE STATE ===
-        # Previous angle for incremental scaling (None when not active)
+        # Estado de escala angular (API estable)
         self._scale_prev_angle = None
-        # Scale factor: pixels per radian
-        # Negative because screen Y is inverted: counter-clockwise (visually up) = grow
-        self._scale_angular_factor = -40.0
-        # Whether angular scaling is currently active (pinch held in scale mode)
         self._scale_angular_active = False
+
+        # === SPATIAL SCALE STATE ===
+        self._scale_zone_active = False
+        self._scale_horizontal_speed = 1.6
 
         # Configuración de colores
         self.colors = [
@@ -283,23 +282,22 @@ class Gesture3D:
                     self.handle_menu_selection(pinch_position)
                 else:
                     if self.selection_mode == SelectionMode.SCALE and self.selected_figure:
-                        # Angular scale mode: just mark as starting, angle recorded on first update
-                        self._scale_prev_angle = None  # Will be set on first scaling call
-                        self._scale_angular_active = True
+                        self._scale_zone_active = True
+                        self.handle_figure_scaling_by_spatial(pinch_position, dt)
                     else:
                         self.handle_figure_selection(pinch_position)
             else:
                 # PINCH continuo
                 if self.selected_figure and pinch_position:
                     if self.selection_mode == SelectionMode.SCALE:
-                        # Use angular scaling (incremental, around figure center)
-                        self.handle_figure_scaling_by_angular(pinch_position)
+                        self.handle_figure_scaling_by_spatial(pinch_position, dt)
                     else:
                         self.move_figure(pinch_position)
                         self.last_pinch_position = pinch_position
         else:
-            # PINCH liberado - reset angular scale state
+            # PINCH liberado - reset escala espacial
             if self.pinch_active and self.selection_mode == SelectionMode.SCALE:
+                self.reset_spatial_scale_state()
                 self.reset_angular_scale_state()
             self.pinch_active = False
             self.pinch_start_position = None
@@ -329,62 +327,92 @@ class Gesture3D:
         self.menu_toggle_position = None
         return requested, position
 
-    def handle_figure_scaling_by_angular(self, pinch_position):
-        """Angular ring scale: size changes based on angular movement around figure center.
+    def handle_figure_scaling_by_spatial(self, pinch_position, dt, left_rect=None, right_rect=None):
+        """Escala basada en zonas horizontales definidas por rectángulos."""
 
-        The user rotates their pinch point around the figure's center.
-        Clockwise rotation increases size, counter-clockwise decreases.
-        This is incremental and continuous - no re-initialization needed.
-        """
+        if not self.selected_figure or not pinch_position:
+            return False
+
+        if left_rect is None or right_rect is None:
+            margin_top = int(self.height * 0.15)
+            margin_bottom = int(self.height * 0.85)
+            left_rect = (0, margin_top, int(self.width * (1/3)), margin_bottom)
+            right_rect = (int(self.width * (2/3)), margin_top, self.width, margin_bottom)
+
+        px, py = pinch_position
+        self._scale_zone_active = False
+
+        def _inside(rect):
+            x1, y1, x2, y2 = rect
+            return x1 <= px <= x2 and y1 <= py <= y2
+
+        if not (_inside(left_rect) or _inside(right_rect)):
+            return False
+
+        center_x = self.width / 2.0
+        delta = (px - center_x) / max(self.width, 1)
+        scale_delta = delta * self._scale_horizontal_speed * dt
+
+        if abs(scale_delta) < 1e-6:
+            return False
+
+        new_size = self.selected_figure['size'] * (1 + scale_delta)
+        new_size = max(self.min_figure_size, min(self.max_figure_size, new_size))
+        self.selected_figure['size'] = int(new_size)
+        self._scale_zone_active = True
+        return True
+
+    def reset_spatial_scale_state(self):
+        """Resetear el estado de escala espacial."""
+
+        self._scale_zone_active = False
+
+    def handle_figure_scaling_by_angular(self, pinch_position):
+        """Escala incremental usando delta angular alrededor del centro de la figura."""
+
         if not self.selected_figure or not pinch_position:
             return
 
         fig_pos = self.selected_figure['position']
 
-        # Calculate current angle from figure center to pinch position
+        # Evitar división por cero si el pinch está exactamente en el centro
         dx = pinch_position[0] - fig_pos[0]
         dy = pinch_position[1] - fig_pos[1]
-
-        # Avoid division by zero when pinch is at figure center
-        if abs(dx) < 1 and abs(dy) < 1:
+        if dx == 0 and dy == 0:
             return
 
         current_angle = math.atan2(dy, dx)
 
-        # First frame of scaling: just record the angle, don't scale yet
         if self._scale_prev_angle is None:
             self._scale_prev_angle = current_angle
             self._scale_angular_active = True
             return
 
-        # Calculate delta angle (handle wrap-around at ±π)
         delta_angle = current_angle - self._scale_prev_angle
 
-        # Normalize to [-π, π] to handle crossing the ±π boundary
-        while delta_angle > math.pi:
+        # Manejar wrap-around en ±π para evitar saltos grandes
+        if delta_angle > math.pi:
             delta_angle -= 2 * math.pi
-        while delta_angle < -math.pi:
+        elif delta_angle < -math.pi:
             delta_angle += 2 * math.pi
 
-        # Update size incrementally
-        # Positive delta (counter-clockwise) = grow, negative = shrink
-        size_delta = delta_angle * self._scale_angular_factor
-        new_size = self.selected_figure['size'] + size_delta
-
-        # Clamp to min/max bounds
+        # Delta positivo (CCW en coords de pantalla) => crecer, negativo => reducir
+        scale_factor = 1 - (delta_angle / math.pi)
+        new_size = self.selected_figure['size'] * scale_factor
         new_size = max(self.min_figure_size, min(self.max_figure_size, new_size))
-        self.selected_figure['size'] = int(new_size)
 
-        # Store current angle for next frame
+        self.selected_figure['size'] = int(new_size)
         self._scale_prev_angle = current_angle
+        self._scale_angular_active = True
 
     def reset_angular_scale_state(self):
-        """Reset angular scale state when exiting scale mode or releasing pinch."""
+        """Reinicia el estado del escalado angular."""
+
         self._scale_prev_angle = None
         self._scale_angular_active = False
 
     def handle_figure_scaling_by_fingers(self):
-        """Legacy: Escala basada en distancia entre dedos (not used in angular mode)"""
+        """Legacy: Escala basada en distancia entre dedos (no usada)."""
         if not self.selected_figure or self.scale_reference_distance == 0:
             return
 
@@ -561,10 +589,10 @@ class Gesture3D:
         """Cambiar entre modo normal y modo escala"""
         if self.selection_mode == SelectionMode.NORMAL:
             self.selection_mode = SelectionMode.SCALE
-            print("[MODE] Cambiado a modo ESCALA (angular)")
+            print("[MODE] Cambiado a modo ESCALA (zonas)")
         else:
             self.selection_mode = SelectionMode.NORMAL
-            # Reset angular scale state when exiting scale mode
+            self.reset_spatial_scale_state()
             self.reset_angular_scale_state()
             print("[MODE] Cambiado a modo NORMAL")
 
@@ -574,12 +602,7 @@ class Gesture3D:
             self.selected_figure['selection_color'] = selection_color
 
     def draw_scale_ring(self, frame):
-        """Draw angular scale ring around selected figure.
-
-        Simple visual indicator: thin circle around the figure.
-        Color changes when scaling is active (pinch held).
-        No blur, no glow, no expensive effects.
-        """
+        """Draw simple ring when el modo escala está activo."""
         if not self.selected_figure or self.selection_mode != SelectionMode.SCALE:
             return
 
@@ -589,23 +612,16 @@ class Gesture3D:
         # Ring radius: slightly larger than figure
         ring_radius = int(fig_size * 1.4)
 
-        # Color: cyan when idle, bright green when actively scaling
-        if self._scale_angular_active and self.pinch_active:
-            ring_color = (0, 255, 150)  # Bright green - active
+        # Color: cyan when idle, bright green when activamente escalando
+        if self._scale_zone_active and self.pinch_active:
+            ring_color = (0, 255, 150)
             thickness = 2
         else:
-            ring_color = (200, 200, 80)  # Cyan/yellow - idle
+            ring_color = (200, 200, 80)
             thickness = 1
 
         # Draw simple ring (no blur, no glow)
         cv2.circle(frame, fig_pos, ring_radius, ring_color, thickness, cv2.LINE_AA)
-
-        # Optional: draw small direction indicator on ring
-        if self._scale_angular_active and self._scale_prev_angle is not None:
-            # Small dot showing current angle position
-            dot_x = int(fig_pos[0] + ring_radius * math.cos(self._scale_prev_angle))
-            dot_y = int(fig_pos[1] + ring_radius * math.sin(self._scale_prev_angle))
-            cv2.circle(frame, (dot_x, dot_y), 4, ring_color, -1, cv2.LINE_AA)
 
     def draw_finger_connection_line(self, frame):
         """Dibujar línea entre dedos en modo escala"""
