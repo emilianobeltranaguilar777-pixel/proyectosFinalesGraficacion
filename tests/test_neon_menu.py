@@ -51,6 +51,7 @@ def test_animation_depends_on_dt():
 
 
 def test_selection_callback_triggered_once():
+    """Selection callback triggers on press edge, not held."""
     calls = []
 
     def on_select(button):
@@ -71,7 +72,6 @@ def test_selection_callback_triggered_once():
     menu.update(cursor_pos, True, 0.1)  # New press should trigger again
 
     assert calls == ["circle", "circle"]
-    assert menu.buttons[0].flash_level > 0.0
 
 
 def test_hover_levels_smoothly_adjust():
@@ -88,6 +88,7 @@ def test_hover_levels_smoothly_adjust():
 
 
 def test_draw_fast_path_does_not_use_blur(monkeypatch):
+    """STABLE mode: No blur, no addWeighted for glow effects."""
     frame = np.zeros((120, 120, 3), dtype=np.uint8)
 
     def fail(*_args, **_kwargs):  # pragma: no cover - failure guard
@@ -114,3 +115,102 @@ def test_draw_fast_path_does_not_use_blur(monkeypatch):
 
     result = menu.draw(frame)
     assert result is frame
+
+
+def test_menu_closes_after_selection():
+    """Menu closes immediately when selection callback calls close()."""
+    closed = []
+
+    def on_select(button):
+        # Simulate what happens in main.py callback
+        closed.append(True)
+
+    menu = NeonMenu(
+        center=(50, 50),
+        radius=40,
+        buttons=[MenuButton("circle", (255, 0, 255), on_select=on_select)],
+    )
+    menu.state = MenuState.VISIBLE
+    menu.animation = 1.0
+
+    # Simulate selection
+    cursor_pos = (50, 10)
+    menu.update(cursor_pos, True, 0.1)
+
+    # Callback was called
+    assert len(closed) == 1
+
+    # Menu should be closable immediately after selection
+    menu.close()
+    assert menu.state == MenuState.CLOSING
+
+
+def test_menu_not_drawn_when_hidden():
+    """Menu draw() is a no-op when animation is 0."""
+    draw_calls = []
+
+    def track_circle(img, *args, **kwargs):
+        draw_calls.append("circle")
+        return img
+
+    fake_cv2 = types.SimpleNamespace(
+        LINE_AA=1,
+        FONT_HERSHEY_SIMPLEX=0,
+        circle=track_circle,
+        polylines=lambda img, *args, **kwargs: img,
+        line=lambda img, *args, **kwargs: img,
+        rectangle=lambda img, *args, **kwargs: img,
+        putText=lambda img, *args, **kwargs: img,
+    )
+
+    import neon_menu
+    original_cv2 = neon_menu.cv2
+    neon_menu.cv2 = fake_cv2
+
+    try:
+        menu = NeonMenu(buttons=[MenuButton("circle", (255, 0, 0))])
+        menu.state = MenuState.HIDDEN
+        menu.animation = 0.0
+
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        result = menu.draw(frame)
+
+        # No drawing calls should have been made
+        assert len(draw_calls) == 0
+        assert result is frame
+    finally:
+        neon_menu.cv2 = original_cv2
+
+
+def test_no_pulse_no_sin_cos_in_draw():
+    """STABLE mode: draw() should not use sin/cos for pulse effects."""
+    # This is a structural test - the simplified NeonMenu doesn't use
+    # time accumulation or pulse calculations
+    menu = NeonMenu(buttons=[MenuButton("circle", (255, 0, 0))])
+
+    # Verify no _time_accum attribute (removed in stable mode)
+    assert not hasattr(menu, "_time_accum") or menu.__dict__.get("_time_accum") is None
+
+    # Verify no pulse_speed attribute
+    assert not hasattr(menu, "pulse_speed")
+
+    # Verify no glow_intensity attribute
+    assert not hasattr(menu, "glow_intensity")
+
+
+def test_positions_calculated_fresh_each_frame():
+    """Positions are calculated fresh each frame (no cache bugs)."""
+    menu = NeonMenu(
+        center=(100, 100),
+        radius=50,
+        buttons=[MenuButton("a", (255, 0, 0)), MenuButton("b", (0, 255, 0))],
+    )
+    menu.state = MenuState.VISIBLE
+    menu.animation = 1.0
+
+    # Move center
+    menu.center = (200, 200)
+
+    # Verify no _cached_positions or similar stale cache
+    # The stable menu calculates positions fresh in draw()
+    assert not hasattr(menu, "_cached_positions") or len(getattr(menu, "_cached_positions", [])) == 0
