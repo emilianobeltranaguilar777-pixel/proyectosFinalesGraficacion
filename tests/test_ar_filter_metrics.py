@@ -63,3 +63,19 @@ def test_mouth_reference_points_return_corners_and_center():
     assert left == (pytest.approx(0.45), pytest.approx(0.52))
     assert right == (pytest.approx(0.55), pytest.approx(0.52))
     assert center_y == pytest.approx(0.5)
+
+
+def test_metrics_accepts_plain_list():
+    landmarks = build_landmarks()
+    assert face_width(landmarks) > 0
+    assert mouth_open_ratio(landmarks) > 0
+
+
+def test_metrics_accepts_mediapipe_landmark_list_mock():
+    class LandmarkList:
+        def __init__(self, points):
+            self.landmark = points
+
+    mp_landmarks = LandmarkList(build_landmarks())
+    assert face_width(mp_landmarks) > 0
+    assert mouth_open_ratio(mp_landmarks) > 0
