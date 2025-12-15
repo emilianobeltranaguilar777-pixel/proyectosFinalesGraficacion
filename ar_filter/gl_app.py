@@ -32,7 +32,8 @@ from .metrics import (
 )
 from .primitives import (
     build_circle, build_horn, build_mask_outline,
-    build_neon_lines, build_zigzag_line, build_star
+    build_neon_lines, build_zigzag_line, build_star,
+    build_thick_line, build_thick_line_strip, build_thick_circle
 )
 
 
@@ -214,10 +215,11 @@ class NeonMaskFilter:
         glfw.make_context_current(self.window)
         glfw.swap_interval(1)  # VSync
 
-        # Setup OpenGL
+        # Setup OpenGL - Core Profile safe settings
+        # NOTE: glLineWidth is NOT used - it causes GL_INVALID_VALUE in Core Profile
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        glLineWidth(2.0)
+        # No depth test, no stencil - keep it simple
 
         # Create shaders
         if not self._create_shaders():
@@ -241,20 +243,26 @@ class NeonMaskFilter:
         print("[AR FILTER] Initialization complete!")
         return True
 
-    def _draw_vertices(self, vertices: np.ndarray, mode: int,
-                       color: tuple, alpha: float = 1.0, pulse: float = 0.0):
+    def _draw_triangles(self, vertices: np.ndarray,
+                        color: tuple, alpha: float = 1.0, pulse: float = 0.0):
         """
-        Draw vertices with current shader settings.
+        Draw triangle vertices with current shader settings.
+
+        NOTE: All geometry MUST be triangle-based for Core Profile compatibility.
+              GL_LINE_* modes are NOT used.
 
         Args:
-            vertices: numpy array of (x, y) vertices
-            mode: GL draw mode (GL_LINE_STRIP, GL_LINE_LOOP, GL_TRIANGLES, etc.)
+            vertices: numpy array of (x, y) vertices for GL_TRIANGLES
             color: RGB tuple (0-1 range)
             alpha: Opacity (0-1)
             pulse: Pulse intensity (0-1)
         """
-        if len(vertices) == 0:
+        if vertices is None or len(vertices) == 0:
             return
+
+        # Ensure vertices is contiguous float32
+        if not vertices.flags['C_CONTIGUOUS']:
+            vertices = np.ascontiguousarray(vertices, dtype=np.float32)
 
         # Update VBO data
         glBindVertexArray(self.vao)
@@ -266,14 +274,16 @@ class NeonMaskFilter:
         glUniform1f(self.u_alpha, alpha)
         glUniform1f(self.u_pulse, pulse)
 
-        # Draw
-        glDrawArrays(mode, 0, len(vertices))
+        # Draw as triangles (Core Profile safe)
+        glDrawArrays(GL_TRIANGLES, 0, len(vertices))
 
         glBindVertexArray(0)
 
     def _render_neon_mask(self, face_data: dict, t: float, intensity: float):
         """
         Render the neon mask effect on detected face.
+
+        NOTE: All rendering uses GL_TRIANGLES for Core Profile compatibility.
 
         Args:
             face_data: Dictionary from face_tracker
@@ -309,7 +319,10 @@ class NeonMaskFilter:
         left_eye = key_points['left_eye_outer']
         right_eye = key_points['right_eye_outer']
 
-        # === Draw mask elements ===
+        # Line thickness scales with face size
+        base_thickness = f_width * 0.015
+
+        # === Draw mask elements (all use GL_TRIANGLES) ===
 
         # 1. Forehead circles (animated)
         circle_y = forehead[1] - f_width * 0.1
@@ -318,33 +331,37 @@ class NeonMaskFilter:
         # Left decoration
         left_circle = build_circle(
             (forehead[0] - f_width * 0.3, circle_y + pulse_offset),
-            f_width * 0.08
+            f_width * 0.08,
+            thickness=base_thickness
         )
-        self._draw_vertices(left_circle, GL_LINE_LOOP, color, 0.9, intensity)
+        self._draw_triangles(left_circle, color, 0.9, intensity)
 
         # Right decoration
         right_circle = build_circle(
             (forehead[0] + f_width * 0.3, circle_y + pulse_offset),
-            f_width * 0.08
+            f_width * 0.08,
+            thickness=base_thickness
         )
-        self._draw_vertices(right_circle, GL_LINE_LOOP, color, 0.9, intensity)
+        self._draw_triangles(right_circle, color, 0.9, intensity)
 
         # 2. Horns (with tilt rotation)
         left_horn = build_horn(
             (forehead[0] - f_width * 0.25, forehead[1] - 0.02),
             scale=f_width * 2.5,
             angle=self.smooth_tilt - 0.3,
-            flip=False
+            flip=False,
+            thickness=base_thickness * 1.2
         )
-        self._draw_vertices(left_horn, GL_LINE_STRIP, color, 0.95, intensity)
+        self._draw_triangles(left_horn, color, 0.95, intensity)
 
         right_horn = build_horn(
             (forehead[0] + f_width * 0.25, forehead[1] - 0.02),
             scale=f_width * 2.5,
             angle=self.smooth_tilt + 0.3,
-            flip=True
+            flip=True,
+            thickness=base_thickness * 1.2
         )
-        self._draw_vertices(right_horn, GL_LINE_STRIP, color, 0.95, intensity)
+        self._draw_triangles(right_horn, color, 0.95, intensity)
 
         # 3. Eye accent lines
         eye_width = abs(right_eye[0] - left_eye[0])
@@ -354,26 +371,29 @@ class NeonMaskFilter:
         left_end = (left_eye[0] - eye_width * 0.4, left_eye[1] - 0.02)
         left_zig = build_zigzag_line(left_start, left_end,
                                      amplitude=0.008 + 0.008 * intensity,
-                                     frequency=4)
-        self._draw_vertices(left_zig, GL_LINE_STRIP, color, 0.8, intensity * 0.5)
+                                     frequency=4,
+                                     thickness=base_thickness * 0.8)
+        self._draw_triangles(left_zig, color, 0.8, intensity * 0.5)
 
         # Right eye zigzag
         right_start = (right_eye[0] + eye_width * 0.1, right_eye[1])
         right_end = (right_eye[0] + eye_width * 0.4, right_eye[1] - 0.02)
         right_zig = build_zigzag_line(right_start, right_end,
                                       amplitude=0.008 + 0.008 * intensity,
-                                      frequency=4)
-        self._draw_vertices(right_zig, GL_LINE_STRIP, color, 0.8, intensity * 0.5)
+                                      frequency=4,
+                                      thickness=base_thickness * 0.8)
+        self._draw_triangles(right_zig, color, 0.8, intensity * 0.5)
 
         # 4. Nose bridge line
         bridge_lines = build_neon_lines(
             (forehead[0], forehead[1] + 0.02),
             (nose[0], nose[1] - 0.03),
             num_lines=2,
-            spacing=0.008
+            spacing=0.008,
+            thickness=base_thickness * 0.6
         )
         for line in bridge_lines:
-            self._draw_vertices(line, GL_LINES, color, 0.6 + 0.3 * intensity, intensity)
+            self._draw_triangles(line, color, 0.6 + 0.3 * intensity, intensity)
 
         # 5. Star decorations (appear when mouth is open)
         if intensity > 0.3:
@@ -381,22 +401,23 @@ class NeonMaskFilter:
             star_size = f_width * 0.06 * (1 + 0.3 * intensity)
 
             # Animated star positions
-            star_angle = t * 2.0
             star_offset = 0.02 * math.sin(t * 3.0)
 
             # Left star
             left_star = build_star(
                 (left_eye[0] - f_width * 0.2, left_eye[1] - 0.04 + star_offset),
-                star_size
+                star_size,
+                thickness=base_thickness * 0.7
             )
-            self._draw_vertices(left_star, GL_LINE_LOOP, color, star_alpha * 0.8, 1.0)
+            self._draw_triangles(left_star, color, star_alpha * 0.8, 1.0)
 
             # Right star
             right_star = build_star(
                 (right_eye[0] + f_width * 0.2, right_eye[1] - 0.04 - star_offset),
-                star_size
+                star_size,
+                thickness=base_thickness * 0.7
             )
-            self._draw_vertices(right_star, GL_LINE_LOOP, color, star_alpha * 0.8, 1.0)
+            self._draw_triangles(right_star, color, star_alpha * 0.8, 1.0)
 
         # 6. Cheek accent circles
         left_cheek_pos = key_points.get('left_cheek', (left_eye[0], nose[1]))
@@ -407,15 +428,17 @@ class NeonMaskFilter:
 
         left_cheek_circle = build_circle(
             (left_cheek_pos[0] - f_width * 0.1, left_cheek_pos[1]),
-            cheek_radius
+            cheek_radius,
+            thickness=base_thickness * 0.6
         )
-        self._draw_vertices(left_cheek_circle, GL_LINE_LOOP, color, 0.5 + 0.3 * intensity, intensity)
+        self._draw_triangles(left_cheek_circle, color, 0.5 + 0.3 * intensity, intensity)
 
         right_cheek_circle = build_circle(
             (right_cheek_pos[0] + f_width * 0.1, right_cheek_pos[1]),
-            cheek_radius
+            cheek_radius,
+            thickness=base_thickness * 0.6
         )
-        self._draw_vertices(right_cheek_circle, GL_LINE_LOOP, color, 0.5 + 0.3 * intensity, intensity)
+        self._draw_triangles(right_cheek_circle, color, 0.5 + 0.3 * intensity, intensity)
 
     def _update_background(self, frame: np.ndarray):
         """Update background texture with camera frame."""
@@ -476,7 +499,8 @@ class NeonMaskFilter:
                 else:
                     self.smooth_mouth = smooth_value(self.smooth_mouth, 0.0, 0.1)
 
-                # Clear OpenGL
+                # Clear OpenGL - CRITICAL: Set viewport before rendering
+                glViewport(0, 0, self.width, self.height)
                 glClearColor(0.0, 0.0, 0.0, 0.0)
                 glClear(GL_COLOR_BUFFER_BIT)
 

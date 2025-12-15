@@ -5,6 +5,9 @@ This module generates vertex data for geometric primitives.
 It does NOT draw anything - only returns vertex arrays.
 
 NO OpenGL calls here.
+
+IMPORTANT: All geometry is triangle-based for OpenGL Core Profile compatibility.
+           No GL_LINE_* modes are used - lines are rendered as thin quads.
 """
 
 import math
@@ -12,27 +15,229 @@ from typing import List, Tuple
 import numpy as np
 
 
-def build_circle(center: Tuple[float, float], radius: float,
-                 segments: int = 32) -> np.ndarray:
+# =============================================================================
+# THICK LINE PRIMITIVES (Core Profile Safe - Triangle Based)
+# =============================================================================
+
+def build_thick_line(p1: Tuple[float, float], p2: Tuple[float, float],
+                     thickness: float = 0.003) -> np.ndarray:
     """
-    Generate vertices for a circle outline.
+    Generate vertices for a thick line as a quad (2 triangles).
+
+    This is Core Profile safe - uses triangles instead of GL_LINES.
+
+    Args:
+        p1: (x, y) start position
+        p2: (x, y) end position
+        thickness: Line thickness (half-width)
+
+    Returns:
+        numpy array of 6 vertices for GL_TRIANGLES (2 triangles)
+    """
+    dx = p2[0] - p1[0]
+    dy = p2[1] - p1[1]
+    length = math.sqrt(dx * dx + dy * dy)
+
+    if length < 0.0001:
+        # Degenerate line - return empty
+        return np.array([], dtype=np.float32).reshape(0, 2)
+
+    # Perpendicular unit vector
+    px = -dy / length * thickness
+    py = dx / length * thickness
+
+    # Four corners of the quad
+    v0 = (p1[0] + px, p1[1] + py)  # Start top
+    v1 = (p1[0] - px, p1[1] - py)  # Start bottom
+    v2 = (p2[0] + px, p2[1] + py)  # End top
+    v3 = (p2[0] - px, p2[1] - py)  # End bottom
+
+    # Two triangles: (v0, v1, v2) and (v1, v3, v2)
+    vertices = [v0, v1, v2, v1, v3, v2]
+
+    return np.array(vertices, dtype=np.float32)
+
+
+def build_thick_line_strip(points: List[Tuple[float, float]],
+                           thickness: float = 0.003) -> np.ndarray:
+    """
+    Generate vertices for a connected line strip as triangles.
+
+    Args:
+        points: List of (x, y) positions
+        thickness: Line thickness
+
+    Returns:
+        numpy array of vertices for GL_TRIANGULAR_STRIP
+    """
+    if len(points) < 2:
+        return np.array([], dtype=np.float32).reshape(0, 2)
+
+    vertices = []
+
+    for i in range(len(points) - 1):
+        p1 = points[i]
+        p2 = points[i + 1]
+
+        dx = p2[0] - p1[0]
+        dy = p2[1] - p1[1]
+        length = math.sqrt(dx * dx + dy * dy)
+
+        if length < 0.0001:
+            continue
+
+        # Perpendicular
+        px = -dy / length * thickness
+        py = dx / length * thickness
+
+        # Add quad for this segment
+        v0 = (p1[0] + px, p1[1] + py)
+        v1 = (p1[0] - px, p1[1] - py)
+        v2 = (p2[0] + px, p2[1] + py)
+        v3 = (p2[0] - px, p2[1] - py)
+
+        vertices.extend([v0, v1, v2, v1, v3, v2])
+
+    if not vertices:
+        return np.array([], dtype=np.float32).reshape(0, 2)
+
+    return np.array(vertices, dtype=np.float32)
+
+
+def build_thick_circle(center: Tuple[float, float], radius: float,
+                       thickness: float = 0.003, segments: int = 32) -> np.ndarray:
+    """
+    Generate vertices for a thick circle outline as triangles.
 
     Args:
         center: (x, y) center position
         radius: Circle radius
-        segments: Number of line segments
+        thickness: Line thickness
+        segments: Number of segments
 
     Returns:
-        numpy array of vertices [(x, y), ...] for LINE_LOOP
+        numpy array of vertices for GL_TRIANGLES
     """
     vertices = []
+
     for i in range(segments):
-        angle = 2.0 * math.pi * i / segments
-        x = center[0] + radius * math.cos(angle)
-        y = center[1] + radius * math.sin(angle)
-        vertices.append((x, y))
+        angle1 = 2.0 * math.pi * i / segments
+        angle2 = 2.0 * math.pi * (i + 1) / segments
+
+        # Inner and outer points for segment
+        inner1 = (center[0] + (radius - thickness) * math.cos(angle1),
+                  center[1] + (radius - thickness) * math.sin(angle1))
+        outer1 = (center[0] + (radius + thickness) * math.cos(angle1),
+                  center[1] + (radius + thickness) * math.sin(angle1))
+        inner2 = (center[0] + (radius - thickness) * math.cos(angle2),
+                  center[1] + (radius - thickness) * math.sin(angle2))
+        outer2 = (center[0] + (radius + thickness) * math.cos(angle2),
+                  center[1] + (radius + thickness) * math.sin(angle2))
+
+        # Two triangles per segment
+        vertices.extend([outer1, inner1, outer2, inner1, inner2, outer2])
 
     return np.array(vertices, dtype=np.float32)
+
+
+def build_thick_star(center: Tuple[float, float], outer_radius: float,
+                     inner_radius: float = None, points: int = 5,
+                     thickness: float = 0.003) -> np.ndarray:
+    """
+    Generate vertices for a thick star outline as triangles.
+
+    Args:
+        center: (x, y) center position
+        outer_radius: Radius to outer points
+        inner_radius: Radius to inner points
+        points: Number of star points
+        thickness: Line thickness
+
+    Returns:
+        numpy array of vertices for GL_TRIANGLES
+    """
+    if inner_radius is None:
+        inner_radius = outer_radius * 0.4
+
+    # Generate star points
+    star_points = []
+    angle_step = math.pi / points
+
+    for i in range(points * 2):
+        angle = -math.pi / 2 + i * angle_step
+        radius = outer_radius if i % 2 == 0 else inner_radius
+        x = center[0] + radius * math.cos(angle)
+        y = center[1] + radius * math.sin(angle)
+        star_points.append((x, y))
+
+    # Close the loop
+    star_points.append(star_points[0])
+
+    return build_thick_line_strip(star_points, thickness)
+
+
+def build_thick_polygon(points: List[Tuple[float, float]],
+                        thickness: float = 0.003, closed: bool = True) -> np.ndarray:
+    """
+    Generate vertices for a thick polygon outline as triangles.
+
+    Args:
+        points: List of (x, y) vertices
+        thickness: Line thickness
+        closed: If True, connect last point to first
+
+    Returns:
+        numpy array of vertices for GL_TRIANGLES
+    """
+    if len(points) < 2:
+        return np.array([], dtype=np.float32).reshape(0, 2)
+
+    all_points = list(points)
+    if closed and len(points) >= 3:
+        all_points.append(points[0])
+
+    return build_thick_line_strip(all_points, thickness)
+
+
+# =============================================================================
+# FILLED PRIMITIVES (Already Core Profile Safe)
+# =============================================================================
+
+def build_filled_quad(p1: Tuple[float, float], p2: Tuple[float, float],
+                      p3: Tuple[float, float], p4: Tuple[float, float]) -> np.ndarray:
+    """
+    Generate vertices for a filled quad as 2 triangles.
+
+    Args:
+        p1, p2, p3, p4: Four corners in order
+
+    Returns:
+        numpy array of 6 vertices for GL_TRIANGLES
+    """
+    return np.array([p1, p2, p3, p2, p4, p3], dtype=np.float32)
+
+
+# =============================================================================
+# LEGACY FUNCTIONS (Now return thick geometry)
+# =============================================================================
+
+def build_circle(center: Tuple[float, float], radius: float,
+                 segments: int = 32, thickness: float = 0.003) -> np.ndarray:
+    """
+    Generate vertices for a circle outline as triangles.
+
+    NOTE: Returns triangle-based geometry for Core Profile compatibility.
+
+    Args:
+        center: (x, y) center position
+        radius: Circle radius
+        segments: Number of segments
+        thickness: Line thickness
+
+    Returns:
+        numpy array of vertices for GL_TRIANGLES
+    """
+    return build_thick_circle(center, radius, thickness, segments)
 
 
 def build_filled_circle(center: Tuple[float, float], radius: float,
@@ -59,18 +264,22 @@ def build_filled_circle(center: Tuple[float, float], radius: float,
 
 
 def build_horn(base_pos: Tuple[float, float], scale: float,
-               angle: float, flip: bool = False) -> np.ndarray:
+               angle: float, flip: bool = False,
+               thickness: float = 0.004) -> np.ndarray:
     """
-    Generate vertices for a curved horn shape.
+    Generate vertices for a curved horn shape as triangles.
+
+    NOTE: Returns triangle-based geometry for Core Profile compatibility.
 
     Args:
         base_pos: (x, y) base position of the horn
         scale: Scale factor for the horn
         angle: Rotation angle in radians
         flip: If True, mirror horizontally
+        thickness: Line thickness
 
     Returns:
-        numpy array of vertices for LINE_STRIP
+        numpy array of vertices for GL_TRIANGLES
     """
     # Horn curve points (relative to base)
     horn_points = [
@@ -104,7 +313,8 @@ def build_horn(base_pos: Tuple[float, float], scale: float,
         # Translate to base position
         vertices.append((base_pos[0] + rx, base_pos[1] + ry))
 
-    return np.array(vertices, dtype=np.float32)
+    # Convert to thick line strip (triangles)
+    return build_thick_line_strip(vertices, thickness)
 
 
 def build_mask_outline(face_points: dict, scale: float = 1.0) -> np.ndarray:
@@ -260,18 +470,22 @@ def build_halo(center: Tuple[float, float], radius: float,
 
 
 def build_neon_lines(start: Tuple[float, float], end: Tuple[float, float],
-                     num_lines: int = 3, spacing: float = 0.01) -> List[np.ndarray]:
+                     num_lines: int = 3, spacing: float = 0.01,
+                     thickness: float = 0.002) -> List[np.ndarray]:
     """
-    Generate parallel neon lines for glow effect.
+    Generate parallel neon lines for glow effect as triangles.
+
+    NOTE: Returns triangle-based geometry for Core Profile compatibility.
 
     Args:
         start: (x, y) start position
         end: (x, y) end position
         num_lines: Number of parallel lines
         spacing: Spacing between lines
+        thickness: Line thickness
 
     Returns:
-        List of line vertex arrays
+        List of triangle vertex arrays for GL_TRIANGLES
     """
     lines = []
 
@@ -287,34 +501,39 @@ def build_neon_lines(start: Tuple[float, float], end: Tuple[float, float],
     px = -dy / length
     py = dx / length
 
-    # Generate parallel lines
+    # Generate parallel lines as thick quads
     for i in range(num_lines):
         offset = (i - (num_lines - 1) / 2) * spacing
         ox = px * offset
         oy = py * offset
 
-        line = np.array([
-            (start[0] + ox, start[1] + oy),
-            (end[0] + ox, end[1] + oy)
-        ], dtype=np.float32)
-        lines.append(line)
+        p1 = (start[0] + ox, start[1] + oy)
+        p2 = (end[0] + ox, end[1] + oy)
+
+        line = build_thick_line(p1, p2, thickness)
+        if len(line) > 0:
+            lines.append(line)
 
     return lines
 
 
 def build_zigzag_line(start: Tuple[float, float], end: Tuple[float, float],
-                      amplitude: float = 0.02, frequency: int = 8) -> np.ndarray:
+                      amplitude: float = 0.02, frequency: int = 8,
+                      thickness: float = 0.003) -> np.ndarray:
     """
-    Generate vertices for a zigzag/lightning line.
+    Generate vertices for a zigzag/lightning line as triangles.
+
+    NOTE: Returns triangle-based geometry for Core Profile compatibility.
 
     Args:
         start: (x, y) start position
         end: (x, y) end position
         amplitude: Zigzag amplitude
         frequency: Number of zigzags
+        thickness: Line thickness
 
     Returns:
-        numpy array of vertices for LINE_STRIP
+        numpy array of vertices for GL_TRIANGLES
     """
     vertices = [start]
 
@@ -323,7 +542,7 @@ def build_zigzag_line(start: Tuple[float, float], end: Tuple[float, float],
     length = math.sqrt(dx * dx + dy * dy)
 
     if length < 0.001:
-        return np.array([start, end], dtype=np.float32)
+        return build_thick_line(start, end, thickness)
 
     # Unit vectors along and perpendicular to line
     ux = dx / length
@@ -344,49 +563,45 @@ def build_zigzag_line(start: Tuple[float, float], end: Tuple[float, float],
 
     vertices.append(end)
 
-    return np.array(vertices, dtype=np.float32)
+    # Convert to thick line strip
+    return build_thick_line_strip(vertices, thickness)
 
 
 def build_star(center: Tuple[float, float], outer_radius: float,
-               inner_radius: float = None, points: int = 5) -> np.ndarray:
+               inner_radius: float = None, points: int = 5,
+               thickness: float = 0.003) -> np.ndarray:
     """
-    Generate vertices for a star shape.
+    Generate vertices for a star shape as triangles.
+
+    NOTE: Returns triangle-based geometry for Core Profile compatibility.
 
     Args:
         center: (x, y) center position
         outer_radius: Radius to outer points
         inner_radius: Radius to inner points (default: outer_radius * 0.4)
         points: Number of star points
+        thickness: Line thickness
 
     Returns:
-        numpy array of vertices for LINE_LOOP
+        numpy array of vertices for GL_TRIANGLES
     """
-    if inner_radius is None:
-        inner_radius = outer_radius * 0.4
-
-    vertices = []
-    angle_step = math.pi / points
-
-    for i in range(points * 2):
-        angle = -math.pi / 2 + i * angle_step
-        radius = outer_radius if i % 2 == 0 else inner_radius
-        x = center[0] + radius * math.cos(angle)
-        y = center[1] + radius * math.sin(angle)
-        vertices.append((x, y))
-
-    return np.array(vertices, dtype=np.float32)
+    return build_thick_star(center, outer_radius, inner_radius, points, thickness)
 
 
-def build_heart(center: Tuple[float, float], size: float) -> np.ndarray:
+def build_heart(center: Tuple[float, float], size: float,
+                thickness: float = 0.003) -> np.ndarray:
     """
-    Generate vertices for a heart shape.
+    Generate vertices for a heart shape as triangles.
+
+    NOTE: Returns triangle-based geometry for Core Profile compatibility.
 
     Args:
         center: (x, y) center position
         size: Size scale factor
+        thickness: Line thickness
 
     Returns:
-        numpy array of vertices for LINE_LOOP
+        numpy array of vertices for GL_TRIANGLES
     """
     vertices = []
     segments = 40
@@ -404,4 +619,6 @@ def build_heart(center: Tuple[float, float], size: float) -> np.ndarray:
 
         vertices.append((x, y))
 
-    return np.array(vertices, dtype=np.float32)
+    # Close the loop and convert to thick polygon
+    vertices.append(vertices[0])
+    return build_thick_line_strip(vertices, thickness)
