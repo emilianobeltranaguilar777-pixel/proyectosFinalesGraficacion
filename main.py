@@ -6,6 +6,7 @@ import os
 from ColorPainter import ColorPainter
 from Gesture3D import Gesture3D, SelectionMode, Gesture
 from neon_menu import MenuButton, NeonMenu
+from ar_filter import run_ar_filter
 
 # Configuración para Ubuntu/Wayland
 os.environ['QT_QPA_PLATFORM'] = 'xcb'
@@ -122,6 +123,17 @@ class PizarraNeon:
         print("[ OK ] Gesture3D: INICIALIZADO")
         return True
 
+    def _restaurar_captura(self):
+        if self.cap:
+            self.cap.release()
+        self.cap = cv2.VideoCapture(0)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.ancho)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.alto)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cv2.namedWindow('NEURAL CANVAS v2.1', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('NEURAL CANVAS v2.1', 1200, 700)
+
     def _posicion_segura_creacion(self):
         """Ajusta la posición de spawn para garantizar visibilidad."""
 
@@ -135,6 +147,16 @@ class PizarraNeon:
         x = min(self.ancho - margen, max(margen, int(preferida[0])))
         y = min(self.alto - margen, max(margen, int(preferida[1])))
         return (x, y)
+
+    def lanzar_filtro_ar(self):
+        print("[ MODE ] AR Filter: LAUNCHING")
+        if self.cap:
+            self.cap.release()
+        cv2.destroyAllWindows()
+        try:
+            run_ar_filter()
+        finally:
+            self._restaurar_captura()
 
     @staticmethod
     def dibujar_texto_limpio(image, text, position, font_scale, color, thickness=1):
@@ -424,6 +446,8 @@ class PizarraNeon:
         if key == ord('q'):
             print("\n[ SHUTDOWN ] Cerrando sistema...")
             return 'quit'
+        elif key == ord('3') and self.modo_actual == "menu":
+            self.lanzar_filtro_ar()
         elif key == ord('1'):
             self.modo_actual = "color"
             print("[ MODE ] Color Tracking: ACTIVATED")
@@ -537,6 +561,7 @@ class PizarraNeon:
         print("║  [1] Color Tracking                  ║")
         print("║  [2] Gesture Recognition             ║")
         print("║  [M] Main Menu                       ║")
+        print("║  [3] AR Filter                       ║")
         print("║  [Q] Shutdown                        ║")
         print("╚═══════════════════════════════════════╝\n")
 
