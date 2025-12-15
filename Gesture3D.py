@@ -80,6 +80,15 @@ class Gesture3D:
         self.size_smoothing = 0.2
         self.previous_sizes = {}
 
+        # === ANGULAR RING SCALE STATE ===
+        # Previous angle for incremental scaling (None when not active)
+        self._scale_prev_angle = None
+        # Scale factor: pixels per radian
+        # Negative because screen Y is inverted: counter-clockwise (visually up) = grow
+        self._scale_angular_factor = -40.0
+        # Whether angular scaling is currently active (pinch held in scale mode)
+        self._scale_angular_active = False
+
         # Configuración de colores
         self.colors = [
             (255, 120, 0),  # Azul eléctrico
@@ -274,21 +283,24 @@ class Gesture3D:
                     self.handle_menu_selection(pinch_position)
                 else:
                     if self.selection_mode == SelectionMode.SCALE and self.selected_figure:
-                        # Iniciar modo escala
-                        self.scale_reference_distance = self.current_finger_distance
-                        self.scale_original_size = self.selected_figure['size']
+                        # Angular scale mode: just mark as starting, angle recorded on first update
+                        self._scale_prev_angle = None  # Will be set on first scaling call
+                        self._scale_angular_active = True
                     else:
                         self.handle_figure_selection(pinch_position)
             else:
                 # PINCH continuo
                 if self.selected_figure and pinch_position:
                     if self.selection_mode == SelectionMode.SCALE:
-                        self.handle_figure_scaling_by_fingers()
+                        # Use angular scaling (incremental, around figure center)
+                        self.handle_figure_scaling_by_angular(pinch_position)
                     else:
                         self.move_figure(pinch_position)
                         self.last_pinch_position = pinch_position
         else:
-            # PINCH liberado
+            # PINCH liberado - reset angular scale state
+            if self.pinch_active and self.selection_mode == SelectionMode.SCALE:
+                self.reset_angular_scale_state()
             self.pinch_active = False
             self.pinch_start_position = None
 
@@ -317,25 +329,73 @@ class Gesture3D:
         self.menu_toggle_position = None
         return requested, position
 
+    def handle_figure_scaling_by_angular(self, pinch_position):
+        """Angular ring scale: size changes based on angular movement around figure center.
+
+        The user rotates their pinch point around the figure's center.
+        Clockwise rotation increases size, counter-clockwise decreases.
+        This is incremental and continuous - no re-initialization needed.
+        """
+        if not self.selected_figure or not pinch_position:
+            return
+
+        fig_pos = self.selected_figure['position']
+
+        # Calculate current angle from figure center to pinch position
+        dx = pinch_position[0] - fig_pos[0]
+        dy = pinch_position[1] - fig_pos[1]
+
+        # Avoid division by zero when pinch is at figure center
+        if abs(dx) < 1 and abs(dy) < 1:
+            return
+
+        current_angle = math.atan2(dy, dx)
+
+        # First frame of scaling: just record the angle, don't scale yet
+        if self._scale_prev_angle is None:
+            self._scale_prev_angle = current_angle
+            self._scale_angular_active = True
+            return
+
+        # Calculate delta angle (handle wrap-around at ±π)
+        delta_angle = current_angle - self._scale_prev_angle
+
+        # Normalize to [-π, π] to handle crossing the ±π boundary
+        while delta_angle > math.pi:
+            delta_angle -= 2 * math.pi
+        while delta_angle < -math.pi:
+            delta_angle += 2 * math.pi
+
+        # Update size incrementally
+        # Positive delta (counter-clockwise) = grow, negative = shrink
+        size_delta = delta_angle * self._scale_angular_factor
+        new_size = self.selected_figure['size'] + size_delta
+
+        # Clamp to min/max bounds
+        new_size = max(self.min_figure_size, min(self.max_figure_size, new_size))
+        self.selected_figure['size'] = int(new_size)
+
+        # Store current angle for next frame
+        self._scale_prev_angle = current_angle
+
+    def reset_angular_scale_state(self):
+        """Reset angular scale state when exiting scale mode or releasing pinch."""
+        self._scale_prev_angle = None
+        self._scale_angular_active = False
+
     def handle_figure_scaling_by_fingers(self):
-        """Escala suavizada basada en distancia entre dedos"""
+        """Legacy: Escala basada en distancia entre dedos (not used in angular mode)"""
         if not self.selected_figure or self.scale_reference_distance == 0:
             return
 
         if self.current_finger_distance == 0:
             return
 
-        # Calcular factor de escala
         scale_factor = self.current_finger_distance / self.scale_reference_distance
-
-        # Aplicar función de suavizado
         smooth_scale = self._apply_smoothing(scale_factor)
-
-        # Calcular nuevo tamaño
         new_size = int(self.scale_original_size * smooth_scale)
         new_size = max(self.min_figure_size, min(self.max_figure_size, new_size))
 
-        # Suavizar transición de tamaño
         figure_id = id(self.selected_figure)
         if figure_id in self.previous_sizes:
             current_size = self.selected_figure['size']
@@ -348,11 +408,10 @@ class Gesture3D:
 
     def _apply_smoothing(self, scale_factor):
         """Aplica suavizado al factor de escala"""
-        # Función de easing para transiciones más suaves
         if scale_factor > 1:
-            return 1 + (scale_factor - 1) * 0.7  # Más suave al agrandar
+            return 1 + (scale_factor - 1) * 0.7
         else:
-            return 1 - (1 - scale_factor) * 0.5  # Más suave al reducir
+            return 1 - (1 - scale_factor) * 0.5
 
     def set_rotation_enabled(self, enabled: bool):
         """Habilita o deshabilita la rotación continua de figuras."""
@@ -502,15 +561,51 @@ class Gesture3D:
         """Cambiar entre modo normal y modo escala"""
         if self.selection_mode == SelectionMode.NORMAL:
             self.selection_mode = SelectionMode.SCALE
-            print("[MODE] Cambiado a modo ESCALA")
+            print("[MODE] Cambiado a modo ESCALA (angular)")
         else:
             self.selection_mode = SelectionMode.NORMAL
+            # Reset angular scale state when exiting scale mode
+            self.reset_angular_scale_state()
             print("[MODE] Cambiado a modo NORMAL")
 
         # Actualizar color de selección
         if self.selected_figure:
             selection_color = (0, 0, 255) if self.selection_mode == SelectionMode.SCALE else (255, 255, 80)
             self.selected_figure['selection_color'] = selection_color
+
+    def draw_scale_ring(self, frame):
+        """Draw angular scale ring around selected figure.
+
+        Simple visual indicator: thin circle around the figure.
+        Color changes when scaling is active (pinch held).
+        No blur, no glow, no expensive effects.
+        """
+        if not self.selected_figure or self.selection_mode != SelectionMode.SCALE:
+            return
+
+        fig_pos = self.selected_figure['position']
+        fig_size = self.selected_figure['size']
+
+        # Ring radius: slightly larger than figure
+        ring_radius = int(fig_size * 1.4)
+
+        # Color: cyan when idle, bright green when actively scaling
+        if self._scale_angular_active and self.pinch_active:
+            ring_color = (0, 255, 150)  # Bright green - active
+            thickness = 2
+        else:
+            ring_color = (200, 200, 80)  # Cyan/yellow - idle
+            thickness = 1
+
+        # Draw simple ring (no blur, no glow)
+        cv2.circle(frame, fig_pos, ring_radius, ring_color, thickness, cv2.LINE_AA)
+
+        # Optional: draw small direction indicator on ring
+        if self._scale_angular_active and self._scale_prev_angle is not None:
+            # Small dot showing current angle position
+            dot_x = int(fig_pos[0] + ring_radius * math.cos(self._scale_prev_angle))
+            dot_y = int(fig_pos[1] + ring_radius * math.sin(self._scale_prev_angle))
+            cv2.circle(frame, (dot_x, dot_y), 4, ring_color, -1, cv2.LINE_AA)
 
     def draw_finger_connection_line(self, frame):
         """Dibujar línea entre dedos en modo escala"""
@@ -742,11 +837,6 @@ class Gesture3D:
 
     def draw_interface(self, frame, gesture, pinch_position, hand_landmarks):
         """Dibujar interfaz completa optimizada"""
-        # Línea entre dedos en modo escala
-        if (self.selection_mode == SelectionMode.SCALE and
-                self.thumb_tip and self.index_tip):
-            self.draw_finger_connection_line(frame)
-
         # Punto de pinch
         if pinch_position:
             color = (0, 0, 255) if self.selection_mode == SelectionMode.SCALE else (0, 255, 0)
@@ -758,6 +848,9 @@ class Gesture3D:
 
         # Figuras
         self.draw_figures(frame)
+
+        # Scale ring (only in scale mode, drawn after figures)
+        self.draw_scale_ring(frame)
 
         # Landmarks de mano
         if hand_landmarks and self.mediapipe_available:
