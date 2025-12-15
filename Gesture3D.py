@@ -327,23 +327,40 @@ class Gesture3D:
         self.menu_toggle_position = None
         return requested, position
 
-    def handle_figure_scaling_by_spatial(self, pinch_position, dt):
-        """Escala basada en zonas horizontales de la pantalla (izquierda/derecha)."""
+    def handle_figure_scaling_by_spatial(self, pinch_position, dt, left_rect=None, right_rect=None):
+        """Escala basada en zonas horizontales definidas por rectángulos."""
 
         if not self.selected_figure or not pinch_position:
-            return
+            return False
+
+        if left_rect is None or right_rect is None:
+            margin_top = int(self.height * 0.15)
+            margin_bottom = int(self.height * 0.85)
+            left_rect = (0, margin_top, int(self.width * (1/3)), margin_bottom)
+            right_rect = (int(self.width * (2/3)), margin_top, self.width, margin_bottom)
+
+        px, py = pinch_position
+        self._scale_zone_active = False
+
+        def _inside(rect):
+            x1, y1, x2, y2 = rect
+            return x1 <= px <= x2 and y1 <= py <= y2
+
+        if not (_inside(left_rect) or _inside(right_rect)):
+            return False
 
         center_x = self.width / 2.0
-        delta = (pinch_position[0] - center_x) / max(self.width, 1)
+        delta = (px - center_x) / max(self.width, 1)
         scale_delta = delta * self._scale_horizontal_speed * dt
 
-        if abs(delta) < 0.05:  # Zona neutra
-            return
+        if abs(scale_delta) < 1e-6:
+            return False
 
         new_size = self.selected_figure['size'] * (1 + scale_delta)
         new_size = max(self.min_figure_size, min(self.max_figure_size, new_size))
         self.selected_figure['size'] = int(new_size)
         self._scale_zone_active = True
+        return True
 
     def reset_spatial_scale_state(self):
         """Resetear el estado de escala espacial."""
