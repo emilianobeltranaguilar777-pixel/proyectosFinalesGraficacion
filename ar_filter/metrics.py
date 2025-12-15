@@ -10,6 +10,9 @@ LANDMARK_LEFT_CHEEK = 234
 LANDMARK_RIGHT_CHEEK = 454
 LANDMARK_UPPER_LIP = 13
 LANDMARK_LOWER_LIP = 14
+LANDMARK_FOREHEAD = 10
+LANDMARK_MOUTH_LEFT = 61
+LANDMARK_MOUTH_RIGHT = 291
 
 
 def _point(landmarks: Sequence, index: int) -> Tuple[float, float]:
@@ -40,6 +43,21 @@ def mouth_open_ratio(landmarks: Sequence) -> float:
 def halo_radius(landmarks: Sequence, scale: float = 1.1) -> float:
     """Determines halo radius from face width."""
     return face_width(landmarks) * scale
+
+
+def head_position(landmarks: Sequence) -> Tuple[float, float]:
+    """Returns a normalized anchor position near the forehead."""
+    return _point(landmarks, LANDMARK_FOREHEAD)
+
+
+def mouth_reference_points(landmarks: Sequence) -> Tuple[Tuple[float, float], Tuple[float, float], float]:
+    """Provides mouth corner positions and vertical center for anchoring quads."""
+    left = _point(landmarks, LANDMARK_MOUTH_LEFT)
+    right = _point(landmarks, LANDMARK_MOUTH_RIGHT)
+    top = _point(landmarks, LANDMARK_UPPER_LIP)
+    bottom = _point(landmarks, LANDMARK_LOWER_LIP)
+    center_y = (top[1] + bottom[1]) * 0.5
+    return left, right, center_y
 
 
 def smooth_value(current: float, target: float, factor: float) -> float:

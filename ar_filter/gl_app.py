@@ -8,7 +8,14 @@ from typing import List, Tuple
 
 import numpy as np
 
-from .metrics import halo_radius, mouth_open_ratio, smooth_value
+from .metrics import (
+    face_width,
+    halo_radius,
+    head_position,
+    mouth_open_ratio,
+    mouth_reference_points,
+    smooth_value,
+)
 from .primitives import create_quad, create_sphere
 
 
@@ -30,6 +37,11 @@ class ARFilterApp:
         self._shader_program = None
         self._vao_quad = None
         self._vao_sphere = None
+
+    def _to_clip_space(self, point: Tuple[float, float]) -> Tuple[float, float]:
+        """Converts normalized landmark coordinates to clip space."""
+        x, y = point
+        return (x * 2.0) - 1.0, 1.0 - (y * 2.0)
 
     def _init_window(self):
         import glfw
@@ -103,27 +115,34 @@ class ARFilterApp:
         self._vao_quad = vao_quad
         self._vao_sphere = vao_sphere
 
-    def _draw_quads(self, color: Tuple[float, float, float], scale_y: float):
+    def _draw_quads(
+        self,
+        centers: List[Tuple[float, float]],
+        width: float,
+        color: Tuple[float, float, float],
+        scale_y: float,
+    ):
         GL = self._gl
         GL.glUseProgram(self._shader_program)
         color_loc = GL.glGetUniformLocation(self._shader_program, "u_color")
         GL.glUniform3f(color_loc, *color)
         GL.glBindVertexArray(self._vao_quad)
-        scale_matrix = np.array(
-            [
-                [0.08, 0.0, 0.0, 0.0],
-                [0.0, scale_y, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ],
-            dtype=np.float32,
-        )
         transform_loc = GL.glGetUniformLocation(self._shader_program, "u_transform")
-        GL.glUniformMatrix4fv(transform_loc, 1, GL.GL_FALSE, scale_matrix)
-        GL.glDrawArrays(GL.GL_TRIANGLE_FAN, 0, 4)
+        for cx, cy in centers:
+            transform = np.array(
+                [
+                    [width, 0.0, 0.0, cx],
+                    [0.0, scale_y, 0.0, cy],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ],
+                dtype=np.float32,
+            )
+            GL.glUniformMatrix4fv(transform_loc, 1, GL.GL_FALSE, transform)
+            GL.glDrawArrays(GL.GL_TRIANGLE_FAN, 0, 4)
         GL.glBindVertexArray(0)
 
-    def _draw_halo(self, radius: float):
+    def _draw_halo(self, center: Tuple[float, float], radius: float):
         GL = self._gl
         GL.glUseProgram(self._shader_program)
         color_loc = GL.glGetUniformLocation(self._shader_program, "u_color")
@@ -135,8 +154,8 @@ class ARFilterApp:
             z = math.sin(angle) * radius
             translate = np.array(
                 [
-                    [1.0, 0.0, 0.0, x],
-                    [0.0, 1.0, 0.0, 0.2],
+                    [1.0, 0.0, 0.0, center[0] + x],
+                    [0.0, 1.0, 0.0, center[1]],
                     [0.0, 0.0, 1.0, z],
                     [0.0, 0.0, 0.0, 1.0],
                 ],
@@ -159,6 +178,9 @@ class ARFilterApp:
         cap = cv2.VideoCapture(0)
         self.face_tracker = FaceTracker()
         last_time = time.perf_counter()
+        halo_center = (0.0, 0.1)
+        mouth_centers: List[Tuple[float, float]] = [(0.0, -0.2), (0.1, -0.2)]
+        quad_width = 0.08
 
         while not glfw.window_should_close(window):
             now = time.perf_counter()
@@ -174,11 +196,22 @@ class ARFilterApp:
             landmarks = self.face_tracker.process(frame)
             mouth_ratio = 0.0
             halo_r = 0.2
+            face_w = 0.2
             if landmarks:
                 halo_r = halo_radius(landmarks)
                 mouth_ratio = mouth_open_ratio(landmarks)
+                head_pos = head_position(landmarks)
+                halo_center = self._to_clip_space(head_pos)
+                face_w = face_width(landmarks)
+                left, right, mouth_y = mouth_reference_points(landmarks)
+                quad_width = max(0.04, min(0.2, face_w * 0.12))
+                mouth_y_clip = self._to_clip_space((0.0, mouth_y))[1]
+                mouth_centers = [
+                    (self._to_clip_space(left)[0], mouth_y_clip),
+                    (self._to_clip_space(right)[0], mouth_y_clip),
+                ]
 
-            target_scale = 0.12 + mouth_ratio * 0.4
+            target_scale = 0.05 + mouth_ratio * 0.35
             target_color = (0.6, 0.0, 0.7) if mouth_ratio > 0.2 else (0.1, 0.3, 1.0)
             self.mouth_scale = smooth_value(self.mouth_scale, target_scale, min(dt * 6.0, 1.0))
             self.mouth_color = tuple(
@@ -188,8 +221,8 @@ class ARFilterApp:
             GL.glViewport(0, 0, self.width, self.height)
             GL.glClearColor(0.02, 0.02, 0.04, 1.0)
             GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
-            self._draw_halo(halo_r)
-            self._draw_quads(self.mouth_color, self.mouth_scale)
+            self._draw_halo(halo_center, halo_r)
+            self._draw_quads(mouth_centers, quad_width, self.mouth_color, self.mouth_scale)
 
             glfw.swap_buffers(window)
             glfw.poll_events()

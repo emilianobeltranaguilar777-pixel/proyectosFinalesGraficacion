@@ -2,7 +2,14 @@ import math
 
 import pytest
 
-from ar_filter.metrics import face_width, halo_radius, mouth_open_ratio, smooth_value
+from ar_filter.metrics import (
+    face_width,
+    halo_radius,
+    head_position,
+    mouth_open_ratio,
+    mouth_reference_points,
+    smooth_value,
+)
 
 
 class Landmark:
@@ -17,6 +24,9 @@ def build_landmarks():
     points[454] = Landmark(0.8, 0.5)
     points[13] = Landmark(0.5, 0.45)
     points[14] = Landmark(0.5, 0.55)
+    points[10] = Landmark(0.52, 0.3)
+    points[61] = Landmark(0.45, 0.52)
+    points[291] = Landmark(0.55, 0.52)
     return points
 
 
@@ -38,3 +48,18 @@ def test_mouth_open_ratio_normalized_by_face():
 
 def test_smooth_value_moves_toward_target():
     assert smooth_value(0.0, 1.0, 0.5) == 0.5
+
+
+def test_head_position_uses_forehead_landmark():
+    landmarks = build_landmarks()
+    x, y = head_position(landmarks)
+    assert x == pytest.approx(0.52)
+    assert y == pytest.approx(0.3)
+
+
+def test_mouth_reference_points_return_corners_and_center():
+    landmarks = build_landmarks()
+    left, right, center_y = mouth_reference_points(landmarks)
+    assert left == (pytest.approx(0.45), pytest.approx(0.52))
+    assert right == (pytest.approx(0.55), pytest.approx(0.52))
+    assert center_y == pytest.approx(0.5)
