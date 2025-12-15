@@ -80,12 +80,13 @@ class Gesture3D:
         self.size_smoothing = 0.2
         self.previous_sizes = {}
 
+        # Estado de escala angular (API estable)
+        self._scale_prev_angle = None
+        self._scale_angular_active = False
+
         # === SPATIAL SCALE STATE ===
-        self._scale_base_size = None
         self._scale_zone_active = False
-        self._scale_max_delta = 0.5  # ±50% por interacción
-        self._scale_vertical_gain = 1.0
-        self._rotation_prev_enabled = None
+        self._scale_horizontal_speed = 1.6
 
         # Configuración de colores
         self.colors = [
@@ -281,16 +282,15 @@ class Gesture3D:
                     self.handle_menu_selection(pinch_position)
                 else:
                     if self.selection_mode == SelectionMode.SCALE and self.selected_figure:
-                        self._scale_base_size = self.selected_figure['size']
                         self._scale_zone_active = True
-                        self.handle_figure_scaling_by_vertical(pinch_position)
+                        self.handle_figure_scaling_by_spatial(pinch_position, dt)
                     else:
                         self.handle_figure_selection(pinch_position)
             else:
                 # PINCH continuo
                 if self.selected_figure and pinch_position:
                     if self.selection_mode == SelectionMode.SCALE:
-                        self.handle_figure_scaling_by_vertical(pinch_position)
+                        self.handle_figure_scaling_by_spatial(pinch_position, dt)
                     else:
                         self.move_figure(pinch_position)
                         self.last_pinch_position = pinch_position
@@ -298,6 +298,7 @@ class Gesture3D:
             # PINCH liberado - reset escala espacial
             if self.pinch_active and self.selection_mode == SelectionMode.SCALE:
                 self.reset_spatial_scale_state()
+                self.reset_angular_scale_state()
             self.pinch_active = False
             self.pinch_start_position = None
 
@@ -326,31 +327,72 @@ class Gesture3D:
         self.menu_toggle_position = None
         return requested, position
 
-    def handle_figure_scaling_by_vertical(self, pinch_position):
-        """Escala basada en la altura relativa de la mano contra el centro de la figura."""
+    def handle_figure_scaling_by_spatial(self, pinch_position, dt):
+        """Escala basada en zonas horizontales de la pantalla (izquierda/derecha)."""
+
+        if not self.selected_figure or not pinch_position:
+            return
+
+        center_x = self.width / 2.0
+        delta = (pinch_position[0] - center_x) / max(self.width, 1)
+        scale_delta = delta * self._scale_horizontal_speed * dt
+
+        if abs(delta) < 0.05:  # Zona neutra
+            return
+
+        new_size = self.selected_figure['size'] * (1 + scale_delta)
+        new_size = max(self.min_figure_size, min(self.max_figure_size, new_size))
+        self.selected_figure['size'] = int(new_size)
+        self._scale_zone_active = True
+
+    def reset_spatial_scale_state(self):
+        """Resetear el estado de escala espacial."""
+
+        self._scale_zone_active = False
+
+    def handle_figure_scaling_by_angular(self, pinch_position):
+        """Escala incremental usando delta angular alrededor del centro de la figura."""
 
         if not self.selected_figure or not pinch_position:
             return
 
         fig_pos = self.selected_figure['position']
-        base_size = self._scale_base_size or self.selected_figure['size']
 
-        # Mano arriba => delta positivo (crece). Mano abajo => delta negativo (disminuye)
-        delta_y = fig_pos[1] - pinch_position[1]
-        normalized = (delta_y / max(self.height, 1)) * self._scale_vertical_gain
-        clamped_delta = max(-self._scale_max_delta, min(self._scale_max_delta, normalized))
+        # Evitar división por cero si el pinch está exactamente en el centro
+        dx = pinch_position[0] - fig_pos[0]
+        dy = pinch_position[1] - fig_pos[1]
+        if dx == 0 and dy == 0:
+            return
 
-        new_size = base_size * (1 + clamped_delta)
+        current_angle = math.atan2(dy, dx)
+
+        if self._scale_prev_angle is None:
+            self._scale_prev_angle = current_angle
+            self._scale_angular_active = True
+            return
+
+        delta_angle = current_angle - self._scale_prev_angle
+
+        # Manejar wrap-around en ±π para evitar saltos grandes
+        if delta_angle > math.pi:
+            delta_angle -= 2 * math.pi
+        elif delta_angle < -math.pi:
+            delta_angle += 2 * math.pi
+
+        # Delta positivo (CCW en coords de pantalla) => crecer, negativo => reducir
+        scale_factor = 1 - (delta_angle / math.pi)
+        new_size = self.selected_figure['size'] * scale_factor
         new_size = max(self.min_figure_size, min(self.max_figure_size, new_size))
+
         self.selected_figure['size'] = int(new_size)
-        self._scale_zone_active = True
-        self._scale_base_size = base_size
+        self._scale_prev_angle = current_angle
+        self._scale_angular_active = True
 
-    def reset_spatial_scale_state(self):
-        """Resetear el estado de escala espacial."""
+    def reset_angular_scale_state(self):
+        """Reinicia el estado del escalado angular."""
 
-        self._scale_base_size = None
-        self._scale_zone_active = False
+        self._scale_prev_angle = None
+        self._scale_angular_active = False
 
     def handle_figure_scaling_by_fingers(self):
         """Legacy: Escala basada en distancia entre dedos (no usada)."""
@@ -530,15 +572,11 @@ class Gesture3D:
         """Cambiar entre modo normal y modo escala"""
         if self.selection_mode == SelectionMode.NORMAL:
             self.selection_mode = SelectionMode.SCALE
-            self._rotation_prev_enabled = self.rotation_enabled
-            self.rotation_enabled = False
-            print("[MODE] Cambiado a modo ESCALA (vertical)")
+            print("[MODE] Cambiado a modo ESCALA (zonas)")
         else:
             self.selection_mode = SelectionMode.NORMAL
             self.reset_spatial_scale_state()
-            if self._rotation_prev_enabled is not None:
-                self.rotation_enabled = self._rotation_prev_enabled
-                self._rotation_prev_enabled = None
+            self.reset_angular_scale_state()
             print("[MODE] Cambiado a modo NORMAL")
 
         # Actualizar color de selección

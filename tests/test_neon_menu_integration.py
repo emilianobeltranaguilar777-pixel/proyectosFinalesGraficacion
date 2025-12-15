@@ -6,53 +6,17 @@ import math
 import sys
 import types
 
+import math
+import sys
+import types
+from importlib import import_module
+
 import numpy as np
 import pytest
 
+_install_fake_cv2 = import_module("tests.conftest")._install_fake_cv2
 from Gesture3D import Gesture3D, Gesture
 from neon_menu import MenuState, NeonMenu, MenuButton
-
-
-def _install_fake_cv2():
-    try:
-        import cv2 as real_cv2
-
-        return real_cv2
-    except Exception:  # pragma: no cover - fallback solo si no hay OpenCV
-        fake_cv2 = types.SimpleNamespace(
-            LINE_AA=1,
-            FONT_HERSHEY_SIMPLEX=0,
-            WINDOW_NORMAL=0,
-            COLOR_BGR2RGB=0,
-            COLOR_HSV2BGR=1,
-        )
-
-        def _return_img(img, *_, **__):
-            return img
-
-        fake_cv2.putText = _return_img
-        fake_cv2.line = _return_img
-        fake_cv2.circle = _return_img
-        fake_cv2.rectangle = _return_img
-        fake_cv2.polylines = _return_img
-        fake_cv2.ellipse = _return_img
-        fake_cv2.cvtColor = lambda img, *_args, **_kwargs: img
-        fake_cv2.GaussianBlur = lambda img, *_args, **_kwargs: img
-        fake_cv2.addWeighted = lambda src1, alpha, src2, beta, gamma, dst=None: src1 if dst is None else dst
-        fake_cv2.resize = lambda img, size, interpolation=None: np.zeros((size[1], size[0], img.shape[2]), dtype=img.dtype)
-        fake_cv2.flip = _return_img
-        fake_cv2.namedWindow = lambda *_, **__: None
-        fake_cv2.resizeWindow = lambda *_, **__: None
-        fake_cv2.waitKey = lambda *_: 0
-        fake_cv2.VideoCapture = lambda *_, **__: types.SimpleNamespace(
-            isOpened=lambda: False, read=lambda: (False, None), set=lambda *a, **k: None
-        )
-
-        sys.modules["cv2"] = fake_cv2
-        import neon_menu as neon_mod
-
-        neon_mod.cv2 = fake_cv2
-        return fake_cv2
 
 
 @pytest.fixture
@@ -62,6 +26,9 @@ def neon_app(monkeypatch):
     _install_fake_cv2()
     monkeypatch.setattr(Gesture3D, "_initialize_mediapipe", lambda self: None)
     from main import PizarraNeon
+    import neon_menu as neon_mod
+
+    neon_mod.cv2 = sys.modules.get("cv2")
 
     app = PizarraNeon()
     app.gesture_3d.mediapipe_available = False
