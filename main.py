@@ -298,6 +298,8 @@ class PizarraNeon:
              "color": self.colores['azul_electrico']},
             {"prefijo": "[2]", "texto": "GESTURE MODULE", "desc": "3D Hand Recognition & Figure Control",
              "color": self.colores['cyan_tech']},
+            {"prefijo": "[3]", "texto": "AR FILTER", "desc": "Snapchat-style Neon Mask Filter",
+             "color": self.colores['verde_matrix']},
             {"prefijo": "[Q]", "texto": "EXIT", "desc": "Shutdown System",
              "color": self.colores['gris_tech']}
         ]
@@ -418,6 +420,34 @@ class PizarraNeon:
 
         return frame_procesado
 
+    def _launch_ar_filter(self):
+        """Launch the AR filter module (isolated, independent camera)."""
+        print("\n[ AR FILTER ] Launching Neon Mask AR Filter...")
+        print("[ AR FILTER ] Releasing main camera...")
+
+        # Release main camera before launching AR filter
+        if self.cap:
+            self.cap.release()
+            self.cap = None
+
+        try:
+            from ar_filter.gl_app import run_ar_filter
+            run_ar_filter()
+        except ImportError as e:
+            print(f"[ AR FILTER ERROR ] Failed to import: {e}")
+            print("[ AR FILTER ERROR ] Make sure PyOpenGL and glfw are installed")
+        except Exception as e:
+            print(f"[ AR FILTER ERROR ] {e}")
+        finally:
+            # Reinitialize main camera after AR filter exits
+            print("[ AR FILTER ] Reinitializing main camera...")
+            self.cap = cv2.VideoCapture(0)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.ancho)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.alto)
+            self.cap.set(cv2.CAP_PROP_FPS, 30)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            print("[ AR FILTER ] Returned to main application")
+
     def procesar_teclas(self, key):
         """Procesa todas las entradas de teclado de manera centralizada"""
         # Navegación principal
@@ -430,6 +460,9 @@ class PizarraNeon:
         elif key == ord('2'):
             self.modo_actual = "gestos"
             print("[ MODE ] Gesture Recognition: ACTIVATED")
+        elif key == ord('3'):
+            # Launch AR Filter (isolated module)
+            self._launch_ar_filter()
         elif key == ord('m'):
             self.modo_actual = "menu"
             print("[ MODE ] Main Menu: LOADED")
@@ -536,6 +569,7 @@ class PizarraNeon:
         print("║  SISTEMA INICIADO CORRECTAMENTE      ║")
         print("║  [1] Color Tracking                  ║")
         print("║  [2] Gesture Recognition             ║")
+        print("║  [3] AR Filter (Neon Mask)           ║")
         print("║  [M] Main Menu                       ║")
         print("║  [Q] Shutdown                        ║")
         print("╚═══════════════════════════════════════╝\n")
