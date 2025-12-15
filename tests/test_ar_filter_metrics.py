@@ -1,7 +1,23 @@
 import math
+import sys
+import types
 
 import pytest
 
+_original_cv2 = sys.modules.get("cv2")
+sys.modules["cv2"] = types.SimpleNamespace(
+    FILLED=0,
+    FONT_HERSHEY_SIMPLEX=0,
+    LINE_AA=0,
+    INTER_LINEAR=0,
+    cvtColor=lambda *args, **kwargs: None,
+    COLOR_BGR2RGB=0,
+    circle=lambda *args, **kwargs: None,
+    line=lambda *args, **kwargs: None,
+    putText=lambda *args, **kwargs: None,
+)
+
+from mediapipe.framework.formats import landmark_pb2
 from ar_filter.metrics import (
     face_width,
     halo_radius,
@@ -10,6 +26,11 @@ from ar_filter.metrics import (
     mouth_reference_points,
     smooth_value,
 )
+
+if _original_cv2 is None:
+    sys.modules.pop("cv2", None)
+else:
+    sys.modules["cv2"] = _original_cv2
 
 
 class Landmark:
@@ -28,6 +49,21 @@ def build_landmarks():
     points[61] = Landmark(0.45, 0.52)
     points[291] = Landmark(0.55, 0.52)
     return points
+
+
+def build_mediapipe_landmark_list():
+    mp_list = landmark_pb2.NormalizedLandmarkList()
+    mp_list.landmark.extend(
+        [landmark_pb2.NormalizedLandmark(x=0.0, y=0.0) for _ in range(500)]
+    )
+    mp_list.landmark[234].x, mp_list.landmark[234].y = 0.2, 0.5
+    mp_list.landmark[454].x, mp_list.landmark[454].y = 0.8, 0.5
+    mp_list.landmark[13].x, mp_list.landmark[13].y = 0.5, 0.45
+    mp_list.landmark[14].x, mp_list.landmark[14].y = 0.5, 0.55
+    mp_list.landmark[10].x, mp_list.landmark[10].y = 0.52, 0.3
+    mp_list.landmark[61].x, mp_list.landmark[61].y = 0.45, 0.52
+    mp_list.landmark[291].x, mp_list.landmark[291].y = 0.55, 0.52
+    return mp_list
 
 
 def test_face_width_uses_cheek_distance():
@@ -77,5 +113,11 @@ def test_metrics_accepts_mediapipe_landmark_list_mock():
             self.landmark = points
 
     mp_landmarks = LandmarkList(build_landmarks())
+    assert face_width(mp_landmarks) > 0
+    assert mouth_open_ratio(mp_landmarks) > 0
+
+
+def test_metrics_accepts_real_mediapipe_landmark_list():
+    mp_landmarks = build_mediapipe_landmark_list()
     assert face_width(mp_landmarks) > 0
     assert mouth_open_ratio(mp_landmarks) > 0

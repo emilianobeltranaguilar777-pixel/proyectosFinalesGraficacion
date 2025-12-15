@@ -21,19 +21,12 @@ def test_ar_filter_fails_cleanly_without_camera(monkeypatch):
 
     from ar_filter.gl_app import ARFilterApp
 
-    class FakeGLFW:
-        def __init__(self):
-            self.terminated = False
-
-        def terminate(self):
-            self.terminated = True
-
-    fake_glfw = FakeGLFW()
     captured_cap = {}
+    window_called = {"called": False}
 
     def fake_init_window(self):
-        self._glfw = fake_glfw
-        return object()
+        window_called["called"] = True
+        raise AssertionError("_init_window should not be called when camera is unavailable")
 
     def fake_setup_buffers(self):
         raise AssertionError("Buffers should not be set up when camera is unavailable")
@@ -64,4 +57,4 @@ def test_ar_filter_fails_cleanly_without_camera(monkeypatch):
     app.run()
 
     assert captured_cap["cap"].released is True
-    assert fake_glfw.terminated is True
+    assert window_called["called"] is False

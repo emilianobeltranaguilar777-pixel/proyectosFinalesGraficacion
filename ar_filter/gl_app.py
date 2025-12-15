@@ -170,15 +170,14 @@ class ARFilterApp:
         import cv2
         from .face_tracker import FaceTracker
 
-        window = self._init_window()
-        glfw = self._glfw
-
         cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
         if not cap.isOpened():
             print("No se pudo abrir la cámara para el filtro AR")
             cap.release()
-            glfw.terminate()
             return
+
+        window = self._init_window()
+        glfw = self._glfw
 
         self._setup_buffers()
         GL = self._gl

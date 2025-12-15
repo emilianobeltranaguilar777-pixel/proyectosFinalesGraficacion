@@ -5,6 +5,11 @@ from __future__ import annotations
 from typing import Iterable, Sequence, Tuple
 import math
 
+try:  # MediaPipe may be unavailable in headless test environments
+    from mediapipe.framework.formats import landmark_pb2
+except Exception:  # pragma: no cover - fallback for environments without MediaPipe
+    landmark_pb2 = None  # type: ignore
+
 
 LANDMARK_LEFT_CHEEK = 234
 LANDMARK_RIGHT_CHEEK = 454
@@ -17,13 +22,18 @@ LANDMARK_MOUTH_RIGHT = 291
 
 def _as_landmark_list(landmarks: Sequence) -> Sequence:
     """Normalizes MediaPipe landmark containers into a sequence."""
+    if landmark_pb2 is not None and isinstance(landmarks, landmark_pb2.NormalizedLandmarkList):
+        return list(landmarks.landmark)
     if hasattr(landmarks, "landmark"):
-        return landmarks.landmark
-    return landmarks
+        return list(landmarks.landmark)
+    if isinstance(landmarks, (list, tuple)):
+        return landmarks
+    raise TypeError("Unsupported landmark container type")
 
 
 def _point(landmarks: Sequence, index: int) -> Tuple[float, float]:
-    landmark = landmarks[index]
+    normalized = _as_landmark_list(landmarks)
+    landmark = normalized[index]
     return float(landmark.x), float(landmark.y)
 
 
