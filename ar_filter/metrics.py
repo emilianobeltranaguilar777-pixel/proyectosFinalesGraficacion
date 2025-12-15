@@ -21,11 +21,18 @@ LANDMARK_MOUTH_RIGHT = 291
 
 
 def _as_landmark_list(landmarks: Sequence) -> Sequence:
+    """Normalize MediaPipe and plain landmark containers to a list-like object."""
+
     if landmarks is None:
         return None
+
     if hasattr(landmarks, "landmark"):
         return landmarks.landmark
-    return landmarks
+
+    if isinstance(landmarks, (list, tuple)):
+        return landmarks
+
+    raise TypeError(f"Unsupported landmarks type: {type(landmarks)}")
 
 
 def _point(landmarks: Sequence, index: int) -> Tuple[float, float]:

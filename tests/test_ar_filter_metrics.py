@@ -121,3 +121,11 @@ def test_metrics_accepts_real_mediapipe_landmark_list():
     mp_landmarks = build_mediapipe_landmark_list()
     assert face_width(mp_landmarks) > 0
     assert mouth_open_ratio(mp_landmarks) > 0
+
+
+def test_metrics_rejects_unsupported_landmark_container():
+    class Unsupported:
+        pass
+
+    with pytest.raises(TypeError):
+        face_width(Unsupported())

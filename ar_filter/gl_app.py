@@ -172,7 +172,7 @@ class ARFilterApp:
 
         cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
         if not cap.isOpened():
-            print("No se pudo abrir la cámara para el filtro AR")
+            print("[ AR FILTER ERROR ] Camera not available (cv2.VideoCapture failed).")
             cap.release()
             return
 
