@@ -13,36 +13,45 @@ import numpy as np
 
 
 def _install_fake_cv2():
-    """Instala un stub mínimo de cv2 para entornos headless."""
+    """Instala un stub mínimo de cv2 solo si la librería real no está disponible."""
 
-    fake_cv2 = types.SimpleNamespace(
-        LINE_AA=1,
-        FONT_HERSHEY_SIMPLEX=0,
-        WINDOW_NORMAL=0,
-        COLOR_BGR2RGB=0,
-    )
+    try:  # Preferir la implementación real para no interferir con ColorPainter
+        import cv2 as real_cv2
 
-    def _return_img(img, *_, **__):
-        return img
+        return real_cv2
+    except Exception:  # pragma: no cover - solo en entornos sin OpenCV
+        fake_cv2 = types.SimpleNamespace(
+            LINE_AA=1,
+            FONT_HERSHEY_SIMPLEX=0,
+            WINDOW_NORMAL=0,
+            COLOR_BGR2RGB=0,
+            COLOR_HSV2BGR=1,
+        )
 
-    fake_cv2.putText = _return_img
-    fake_cv2.line = _return_img
-    fake_cv2.circle = _return_img
-    fake_cv2.rectangle = _return_img
-    fake_cv2.polylines = _return_img
-    fake_cv2.cvtColor = lambda img, *_args, **_kwargs: img
-    fake_cv2.GaussianBlur = lambda img, *_args, **_kwargs: img
-    fake_cv2.addWeighted = lambda src1, alpha, src2, beta, gamma, dst=None: src1 if dst is None else dst
-    fake_cv2.resize = lambda img, size: np.zeros((size[1], size[0], img.shape[2]), dtype=img.dtype)
-    fake_cv2.flip = _return_img
-    fake_cv2.namedWindow = lambda *_, **__: None
-    fake_cv2.resizeWindow = lambda *_, **__: None
-    fake_cv2.waitKey = lambda *_: 0
-    fake_cv2.VideoCapture = lambda *_, **__: types.SimpleNamespace(
-        isOpened=lambda: False, read=lambda: (False, None), set=lambda *a, **k: None
-    )
+        def _return_img(img, *_, **__):
+            return img
 
-    sys.modules["cv2"] = fake_cv2
+        fake_cv2.putText = _return_img
+        fake_cv2.line = _return_img
+        fake_cv2.circle = _return_img
+        fake_cv2.rectangle = _return_img
+        fake_cv2.polylines = _return_img
+        fake_cv2.cvtColor = lambda img, *_args, **_kwargs: img
+        fake_cv2.GaussianBlur = lambda img, *_args, **_kwargs: img
+        fake_cv2.addWeighted = lambda src1, alpha, src2, beta, gamma, dst=None: src1 if dst is None else dst
+        fake_cv2.resize = lambda img, size: np.zeros((size[1], size[0], img.shape[2]), dtype=img.dtype)
+        fake_cv2.flip = _return_img
+        fake_cv2.namedWindow = lambda *_, **__: None
+        fake_cv2.resizeWindow = lambda *_, **__: None
+        fake_cv2.waitKey = lambda *_: 0
+        fake_cv2.getTickCount = lambda: 0
+        fake_cv2.getTickFrequency = lambda: 1.0
+        fake_cv2.VideoCapture = lambda *_, **__: types.SimpleNamespace(
+            isOpened=lambda: False, read=lambda: (False, None), set=lambda *a, **k: None
+        )
+
+        sys.modules["cv2"] = fake_cv2
+        return fake_cv2
 
 
 # Agregar el directorio raiz al path
