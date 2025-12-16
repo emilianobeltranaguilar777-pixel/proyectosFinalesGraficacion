@@ -37,9 +37,11 @@ from .metrics import (
     face_width, halo_radius, mouth_openness, face_center,
     halo_sphere_positions, mouth_rect_scale, mouth_rect_color,
     smooth_value, clamp, forehead_center, mouth_center, mouth_width,
-    halo_sphere_positions_v2
+    halo_sphere_positions_v2, robot_mouth_bar_color, robot_mouth_bar_heights,
+    mouth_plate_dimensions, estimate_face_roll
 )
-from .primitives import build_sphere, build_quad
+from .primitives import build_sphere, build_quad, build_cube
+import random
 
 
 # MediaPipe FaceMesh connection indices for debug visualization
@@ -60,6 +62,154 @@ RIGHT_EYE_PATH = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 38
 LEFT_EYEBROW_PATH = [46, 53, 52, 65, 55, 107, 66, 105, 63, 70]
 RIGHT_EYEBROW_PATH = [276, 283, 282, 295, 285, 336, 296, 334, 293, 300]
 NOSE_PATH = [168, 6, 197, 195, 5, 4, 1, 19, 94, 2]
+
+
+# ============================================================================
+# Orbiting Cubes with Trails System
+# ============================================================================
+
+class CubeData:
+    """Individual cube orbital parameters."""
+
+    def __init__(self):
+        self.orbit_radius_factor = random.uniform(0.8, 1.8)
+        self.orbit_speed = random.uniform(0.4, 1.2)
+        self.spin_speed = random.uniform(0.6, 2.5)
+        self.wobble_speed = random.uniform(1.4, 3.0)
+        self.wobble_amp = random.uniform(0.3, 1.0)
+        # Color: bluish tones with variation
+        base = random.uniform(0.5, 1.0)
+        self.color = (base * 0.6, base * 0.8, 1.0)
+
+
+class Particle:
+    """Trail particle data."""
+
+    def __init__(self):
+        self.pos = [0.0, 0.0, 0.0]
+        self.vel = [0.0, 0.0, 0.0]
+        self.life = 0.0
+        self.color = (1.0, 1.0, 1.0)
+
+
+class OrbitingCubesSystem:
+    """
+    System for orbiting cubes with particle trails.
+
+    Manages multiple cubes orbiting around a center point,
+    each leaving a trail of fading particles.
+    """
+
+    NUM_CUBES = 12
+    CUBE_SIZE = 0.012
+    PARTICLE_COUNT = 400
+
+    def __init__(self):
+        self.cubes = [CubeData() for _ in range(self.NUM_CUBES)]
+        self.particles = [Particle() for _ in range(self.PARTICLE_COUNT)]
+        self.time = 0.0
+        self.particle_emit_idx = 0
+
+    def emit_trail_particle(self, cube_pos: Tuple[float, float, float],
+                            trail_dir: Tuple[float, float, float],
+                            color: Tuple[float, float, float]):
+        """Emit a particle from a cube position."""
+        p = self.particles[self.particle_emit_idx]
+        self.particle_emit_idx = (self.particle_emit_idx + 1) % self.PARTICLE_COUNT
+
+        p.pos = list(cube_pos)
+        # Velocity opposite to movement direction
+        speed = random.uniform(0.02, 0.05)
+        p.vel = [-trail_dir[0] * speed, -trail_dir[1] * speed, -trail_dir[2] * speed]
+        p.life = 1.0
+        p.color = color
+
+    def update(self, dt: float, center: Tuple[float, float, float],
+               base_radius: float):
+        """
+        Update cubes and particles.
+
+        Args:
+            dt: Delta time in seconds
+            center: Orbit center position (face center)
+            base_radius: Base orbit radius (scaled by face)
+        """
+        self.time += dt
+
+        # Update each cube and emit particles
+        for i, cube in enumerate(self.cubes):
+            # Calculate orbital position
+            angle = self.time * cube.orbit_speed + (i * 2.0 * math.pi / self.NUM_CUBES)
+            orbit_r = base_radius * cube.orbit_radius_factor
+
+            ox = center[0] + orbit_r * math.cos(angle)
+            oz = center[2] + orbit_r * math.sin(angle) * 0.4
+            oy = center[1] + math.sin(self.time * cube.wobble_speed + i) * cube.wobble_amp * base_radius * 0.3
+
+            # Trail direction (tangent to orbit)
+            trail_dir = (
+                -math.sin(angle),
+                0.0,
+                math.cos(angle) * 0.4
+            )
+
+            # Emit 2 particles per cube per frame
+            for _ in range(2):
+                self.emit_trail_particle((ox, oy, oz), trail_dir, cube.color)
+
+        # Update particles
+        for p in self.particles:
+            if p.life <= 0:
+                continue
+            p.pos[0] += p.vel[0] * dt
+            p.pos[1] += p.vel[1] * dt
+            p.pos[2] += p.vel[2] * dt
+            p.life -= dt * 1.2  # Fade out
+
+    def get_cube_transforms(self, center: Tuple[float, float, float],
+                            base_radius: float) -> List[Tuple]:
+        """
+        Get cube positions and rotations for rendering.
+
+        Returns:
+            List of (position, spin_y, wobble_x, wobble_z, color) tuples
+        """
+        transforms = []
+
+        for i, cube in enumerate(self.cubes):
+            angle = self.time * cube.orbit_speed + (i * 2.0 * math.pi / self.NUM_CUBES)
+            orbit_r = base_radius * cube.orbit_radius_factor
+
+            ox = center[0] + orbit_r * math.cos(angle)
+            oz = center[2] + orbit_r * math.sin(angle) * 0.4
+            oy = center[1] + math.sin(self.time * cube.wobble_speed + i) * cube.wobble_amp * base_radius * 0.3
+
+            spin_y = self.time * cube.spin_speed
+            wobble_x = math.sin(self.time * cube.wobble_speed + i) * 0.4
+            wobble_z = math.sin(self.time * cube.wobble_speed * 1.3 + i) * 0.4
+
+            transforms.append(((ox, oy, oz), spin_y, wobble_x, wobble_z, cube.color))
+
+        return transforms
+
+    def get_particle_data(self) -> np.ndarray:
+        """
+        Get particle data for VBO upload.
+
+        Returns:
+            Numpy array of [x, y, z, r, g, b, life] per particle
+        """
+        data = []
+        for p in self.particles:
+            if p.life > 0:
+                data.extend(p.pos)
+                data.extend(p.color)
+                data.append(p.life)
+            else:
+                # Dead particle - zero alpha
+                data.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+
+        return np.array(data, dtype=np.float32)
 
 
 class ARFilterApp:
@@ -128,6 +278,24 @@ class ARFilterApp:
         self.mesh_vbo = None
         self.mesh_vbo_bytes = 0  # Track allocated size for dynamic realloc
         self.show_debug_mesh = True  # Toggle with 'D' key
+
+        # Cube geometry (cached)
+        self.cube_vao = None
+        self.cube_vbo = None
+        self.cube_nbo = None
+        self.cube_ibo = None
+        self.cube_index_count = 0
+
+        # Particle system
+        self.particle_shader_program = None
+        self.particle_vao = None
+        self.particle_vbo = None
+
+        # Orbiting cubes system
+        self.cubes_system = OrbitingCubesSystem()
+
+        # Robot mouth state
+        self.robot_mouth_time = 0.0
 
         # State
         self.running = False
@@ -261,6 +429,16 @@ class ARFilterApp:
             mesh_frag = gl_shaders.compileShader(mesh_frag_src, GL_FRAGMENT_SHADER)
             self.mesh_shader_program = gl_shaders.compileProgram(mesh_vert, mesh_frag)
 
+            # Particle shader for trails
+            with open(os.path.join(shader_dir, "particle.vert"), "r") as f:
+                part_vert_src = f.read()
+            with open(os.path.join(shader_dir, "particle.frag"), "r") as f:
+                part_frag_src = f.read()
+
+            part_vert = gl_shaders.compileShader(part_vert_src, GL_VERTEX_SHADER)
+            part_frag = gl_shaders.compileShader(part_frag_src, GL_FRAGMENT_SHADER)
+            self.particle_shader_program = gl_shaders.compileProgram(part_vert, part_frag)
+
             return True
 
         except Exception as e:
@@ -379,6 +557,58 @@ class ARFilterApp:
         mesh_pos_loc = glGetAttribLocation(self.mesh_shader_program, "position")
         glEnableVertexAttribArray(mesh_pos_loc)
         glVertexAttribPointer(mesh_pos_loc, 2, GL_FLOAT, GL_FALSE, 0, None)
+
+        glBindVertexArray(0)
+
+        # Build cube geometry for orbiting cubes
+        cube_verts, cube_norms, cube_indices = build_cube(size=1.0)
+        self.cube_index_count = len(cube_indices) * 3
+
+        self.cube_vao = glGenVertexArrays(1)
+        glBindVertexArray(self.cube_vao)
+
+        self.cube_vbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.cube_vbo)
+        glBufferData(GL_ARRAY_BUFFER, cube_verts.nbytes, cube_verts, GL_STATIC_DRAW)
+        glEnableVertexAttribArray(pos_loc)
+        glVertexAttribPointer(pos_loc, 3, GL_FLOAT, GL_FALSE, 0, None)
+
+        self.cube_nbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.cube_nbo)
+        glBufferData(GL_ARRAY_BUFFER, cube_norms.nbytes, cube_norms, GL_STATIC_DRAW)
+        glEnableVertexAttribArray(norm_loc)
+        glVertexAttribPointer(norm_loc, 3, GL_FLOAT, GL_FALSE, 0, None)
+
+        self.cube_ibo = glGenBuffers(1)
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.cube_ibo)
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, cube_indices.nbytes, cube_indices, GL_STATIC_DRAW)
+
+        glBindVertexArray(0)
+
+        # Particle VBO for trails (dynamic)
+        self.particle_vao = glGenVertexArrays(1)
+        glBindVertexArray(self.particle_vao)
+
+        self.particle_vbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.particle_vbo)
+        # Pre-allocate for particles: 7 floats per particle (x,y,z,r,g,b,life)
+        particle_buffer_size = OrbitingCubesSystem.PARTICLE_COUNT * 7 * 4
+        glBufferData(GL_ARRAY_BUFFER, particle_buffer_size, None, GL_DYNAMIC_DRAW)
+
+        # Particle attributes: position (3), color (3), life (1)
+        part_pos_loc = glGetAttribLocation(self.particle_shader_program, "position")
+        part_color_loc = glGetAttribLocation(self.particle_shader_program, "color")
+        part_life_loc = glGetAttribLocation(self.particle_shader_program, "life")
+
+        stride = 7 * 4  # 7 floats * 4 bytes
+        glEnableVertexAttribArray(part_pos_loc)
+        glVertexAttribPointer(part_pos_loc, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
+
+        glEnableVertexAttribArray(part_color_loc)
+        glVertexAttribPointer(part_color_loc, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(12))
+
+        glEnableVertexAttribArray(part_life_loc)
+        glVertexAttribPointer(part_life_loc, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(24))
 
         glBindVertexArray(0)
 
@@ -512,6 +742,111 @@ class ARFilterApp:
         glDrawElements(GL_TRIANGLES, self.quad_index_count, GL_UNSIGNED_INT, None)
         glBindVertexArray(0)
 
+    def _create_rotation_matrix_y(self, angle: float) -> np.ndarray:
+        """Create Y-axis rotation matrix."""
+        c, s = math.cos(angle), math.sin(angle)
+        rot = np.eye(4, dtype=np.float32)
+        rot[0, 0] = c
+        rot[0, 2] = s
+        rot[2, 0] = -s
+        rot[2, 2] = c
+        return rot
+
+    def _create_rotation_matrix_x(self, angle: float) -> np.ndarray:
+        """Create X-axis rotation matrix."""
+        c, s = math.cos(angle), math.sin(angle)
+        rot = np.eye(4, dtype=np.float32)
+        rot[1, 1] = c
+        rot[1, 2] = -s
+        rot[2, 1] = s
+        rot[2, 2] = c
+        return rot
+
+    def _create_rotation_matrix_z(self, angle: float) -> np.ndarray:
+        """Create Z-axis rotation matrix."""
+        c, s = math.cos(angle), math.sin(angle)
+        rot = np.eye(4, dtype=np.float32)
+        rot[0, 0] = c
+        rot[0, 1] = -s
+        rot[1, 0] = s
+        rot[1, 1] = c
+        return rot
+
+    def _render_cube(self, position: Tuple[float, float, float],
+                     scale: float, color: Tuple[float, float, float],
+                     spin_y: float = 0.0, wobble_x: float = 0.0, wobble_z: float = 0.0):
+        """Render a cube with rotation at given position."""
+        # Build model matrix: translate * rotY * rotX * rotZ * scale
+        trans = np.eye(4, dtype=np.float32)
+        trans[0, 3] = position[0]
+        trans[1, 3] = position[1]
+        trans[2, 3] = position[2]
+
+        scale_mat = np.eye(4, dtype=np.float32)
+        scale_mat[0, 0] = scale
+        scale_mat[1, 1] = scale
+        scale_mat[2, 2] = scale
+
+        rot_y = self._create_rotation_matrix_y(spin_y)
+        rot_x = self._create_rotation_matrix_x(wobble_x)
+        rot_z = self._create_rotation_matrix_z(wobble_z)
+
+        # Combine: trans * rotY * rotX * rotZ * scale
+        model = trans @ rot_y @ rot_x @ rot_z @ scale_mat
+
+        view = self._create_view_matrix()
+        proj = self._create_projection_matrix()
+
+        glUseProgram(self.shader_program)
+
+        model_loc = glGetUniformLocation(self.shader_program, "model")
+        view_loc = glGetUniformLocation(self.shader_program, "view")
+        proj_loc = glGetUniformLocation(self.shader_program, "projection")
+        color_loc = glGetUniformLocation(self.shader_program, "objectColor")
+        light_loc = glGetUniformLocation(self.shader_program, "lightDir")
+        ambient_loc = glGetUniformLocation(self.shader_program, "ambient")
+
+        glUniformMatrix4fv(model_loc, 1, GL_TRUE, model)
+        glUniformMatrix4fv(view_loc, 1, GL_TRUE, view)
+        glUniformMatrix4fv(proj_loc, 1, GL_TRUE, proj)
+        glUniform3f(color_loc, *color)
+        glUniform3f(light_loc, 0.5, -0.5, 1.0)
+        glUniform1f(ambient_loc, 0.35)
+
+        glBindVertexArray(self.cube_vao)
+        glDrawElements(GL_TRIANGLES, self.cube_index_count, GL_UNSIGNED_INT, None)
+        glBindVertexArray(0)
+
+    def _render_particles(self):
+        """Render particle trails."""
+        particle_data = self.cubes_system.get_particle_data()
+
+        glUseProgram(self.particle_shader_program)
+
+        view = self._create_view_matrix()
+        proj = self._create_projection_matrix()
+
+        view_loc = glGetUniformLocation(self.particle_shader_program, "view")
+        proj_loc = glGetUniformLocation(self.particle_shader_program, "projection")
+
+        glUniformMatrix4fv(view_loc, 1, GL_TRUE, view)
+        glUniformMatrix4fv(proj_loc, 1, GL_TRUE, proj)
+
+        # Enable blending for alpha
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glEnable(GL_PROGRAM_POINT_SIZE)
+
+        glBindBuffer(GL_ARRAY_BUFFER, self.particle_vbo)
+        glBufferSubData(GL_ARRAY_BUFFER, 0, particle_data.nbytes, particle_data)
+
+        glBindVertexArray(self.particle_vao)
+        glDrawArrays(GL_POINTS, 0, OrbitingCubesSystem.PARTICLE_COUNT)
+        glBindVertexArray(0)
+
+        glDisable(GL_PROGRAM_POINT_SIZE)
+        glDisable(GL_BLEND)
+
     def _render_facemesh_debug(self, landmarks: List[Tuple[float, float, float]]):
         """
         Render FaceMesh landmarks for debugging.
@@ -603,70 +938,127 @@ class ARFilterApp:
         glDrawArrays(GL_LINE_STRIP, 0, len(path_points))
 
     def _render_halo(self, landmarks: List[Tuple[float, float, float]], dt: float):
-        """Render halo of spheres above head using forehead landmark."""
+        """Render orbiting cubes with particle trails around the head."""
         # Get face metrics
         fw = face_width(landmarks)
         if fw < 0.01:
             return
 
-        hr = halo_radius(fw, scale_factor=0.8)  # Smaller radius for tighter halo
+        # Base orbit radius scaled by face width
+        base_radius = halo_radius(fw, scale_factor=0.9)
         forehead = forehead_center(landmarks)
 
         # Mirror X coordinate to match the flipped camera
-        forehead_mirrored = (1.0 - forehead[0], forehead[1], forehead[2])
-
-        # Update rotation
-        self.halo_angle += self.HALO_ROTATION_SPEED * dt
-
-        # Get sphere positions using forehead-based positioning
-        positions = halo_sphere_positions_v2(
-            forehead_mirrored, hr, self.NUM_HALO_SPHERES, self.halo_angle,
-            height_offset=0.06  # Position above forehead
+        # Position orbit center above forehead
+        orbit_center = (
+            1.0 - forehead[0],
+            forehead[1] - 0.05,  # Slightly above forehead
+            forehead[2]
         )
 
-        # Render each sphere with gradient colors
-        for i, pos in enumerate(positions):
-            # Color gradient from gold to orange
-            t = i / max(1, self.NUM_HALO_SPHERES - 1)
-            r = 1.0
-            g = 0.8 - t * 0.3
-            b = 0.2 + t * 0.2
+        # Update cubes system
+        self.cubes_system.update(dt, orbit_center, base_radius)
 
-            self._render_sphere(pos, self.SPHERE_SIZE, (r, g, b))
+        # Render particles first (behind cubes)
+        self._render_particles()
 
-    def _render_mouth_rects(self, landmarks: List[Tuple[float, float, float]]):
-        """Render mouth-reactive rectangles at the actual mouth position."""
-        # Get mouth openness
+        # Get cube transforms and render each cube
+        transforms = self.cubes_system.get_cube_transforms(orbit_center, base_radius)
+        for pos, spin_y, wobble_x, wobble_z, color in transforms:
+            self._render_cube(
+                pos, OrbitingCubesSystem.CUBE_SIZE, color,
+                spin_y, wobble_x, wobble_z
+            )
+
+    def _render_mouth_rects(self, landmarks: List[Tuple[float, float, float]], dt: float):
+        """
+        Render robot mouth that covers real mouth with animated bars.
+
+        Features:
+        - Dark plate covering the real mouth
+        - N animated bars that react to mouth openness
+        - Smooth color gradient (blue → yellow → red)
+        - Pulsing animation when speaking
+        """
+        # Update time for animations
+        self.robot_mouth_time += dt
+
+        # Get mouth openness with smoothing (alpha=0.2 for stability)
         raw_mouth = mouth_openness(landmarks)
-        self.smoothed_mouth = smooth_value(self.smoothed_mouth, raw_mouth, 0.3)
+        self.smoothed_mouth = smooth_value(self.smoothed_mouth, raw_mouth, 0.2)
 
-        # Get actual mouth center and width
+        # Get mouth position and dimensions
         mouth_pos = mouth_center(landmarks)
-        m_width = mouth_width(landmarks)
+        plate_width, plate_height = mouth_plate_dimensions(landmarks, width_scale=1.3, height_ratio=0.5)
+
+        # Get face roll for slight rotation with mouth
+        roll = estimate_face_roll(landmarks)
 
         # Mirror X coordinate to match the flipped camera
         mouth_pos_mirrored = (1.0 - mouth_pos[0], mouth_pos[1], mouth_pos[2])
 
-        # Calculate scale and color based on mouth openness
-        scale = mouth_rect_scale(self.smoothed_mouth, min_scale=0.5, max_scale=2.5)
-        color = mouth_rect_color(self.smoothed_mouth)
+        # Enable blending for alpha
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
-        # Base rectangle size proportional to mouth width
-        base_width = m_width * 0.25
-        base_height = base_width * 0.5 * scale
+        # 1. Render dark plate covering the mouth
+        plate_color = (0.08, 0.08, 0.12)  # Dark blue-gray
+        self._render_quad(
+            (mouth_pos_mirrored[0], mouth_pos_mirrored[1], 0.05),
+            plate_width, plate_height, plate_color
+        )
 
-        # Render rectangles centered on the mouth
-        for i in range(self.NUM_MOUTH_RECTS):
-            # Offset each rect horizontally, spread across mouth width
-            offset_x = (i - 1) * base_width * 1.2
+        # 2. Render optional neon border (glow effect with two layers)
+        border_color_outer = (0.2, 0.6, 1.0)  # Cyan glow outer
+        border_color_inner = (0.4, 0.8, 1.0)  # Brighter inner
 
-            pos = (
-                mouth_pos_mirrored[0] + offset_x,
-                mouth_pos_mirrored[1],
-                0.1  # Slightly in front
+        # Outer glow border (slightly larger)
+        self._render_quad(
+            (mouth_pos_mirrored[0], mouth_pos_mirrored[1], 0.04),
+            plate_width * 1.08, plate_height * 1.15,
+            (border_color_outer[0] * 0.3, border_color_outer[1] * 0.3, border_color_outer[2] * 0.3)
+        )
+
+        # 3. Render animated bars
+        num_bars = 7
+        bar_heights = robot_mouth_bar_heights(
+            num_bars, self.smoothed_mouth, self.robot_mouth_time,
+            base_height=0.25, max_height=1.0, pulse_freq=10.0
+        )
+        bar_color = robot_mouth_bar_color(self.smoothed_mouth)
+
+        # Calculate bar dimensions
+        total_bar_width = plate_width * 0.85
+        bar_spacing = total_bar_width / num_bars
+        bar_width = bar_spacing * 0.7
+        max_bar_height = plate_height * 0.8
+
+        # Start position (left side of bars)
+        start_x = mouth_pos_mirrored[0] - total_bar_width / 2 + bar_spacing / 2
+
+        for i in range(num_bars):
+            # Bar position
+            bar_x = start_x + i * bar_spacing
+            bar_h = bar_heights[i] * max_bar_height
+
+            # Render bar
+            self._render_quad(
+                (bar_x, mouth_pos_mirrored[1], 0.06),
+                bar_width, bar_h, bar_color
             )
 
-            self._render_quad(pos, base_width, base_height, color)
+            # Add highlight on top of each bar
+            highlight_color = (
+                min(1.0, bar_color[0] + 0.3),
+                min(1.0, bar_color[1] + 0.3),
+                min(1.0, bar_color[2] + 0.3)
+            )
+            self._render_quad(
+                (bar_x, mouth_pos_mirrored[1] - bar_h * 0.4, 0.07),
+                bar_width * 0.6, bar_h * 0.15, highlight_color
+            )
+
+        glDisable(GL_BLEND)
 
     def run(self):
         """Main application loop."""
@@ -741,7 +1133,7 @@ class ARFilterApp:
 
                 # Render AR filter elements
                 self._render_halo(landmarks, dt)
-                self._render_mouth_rects(landmarks)
+                self._render_mouth_rects(landmarks, dt)
 
             # Swap buffers and poll events
             glfw.swap_buffers(self.window)
@@ -765,6 +1157,8 @@ class ARFilterApp:
             glDeleteProgram(self.bg_shader_program)
         if self.mesh_shader_program:
             glDeleteProgram(self.mesh_shader_program)
+        if self.particle_shader_program:
+            glDeleteProgram(self.particle_shader_program)
 
         if self.sphere_vao:
             glDeleteVertexArrays(1, [self.sphere_vao])
@@ -774,6 +1168,10 @@ class ARFilterApp:
             glDeleteVertexArrays(1, [self.quad_vao])
         if self.bg_vao:
             glDeleteVertexArrays(1, [self.bg_vao])
+        if self.cube_vao:
+            glDeleteVertexArrays(1, [self.cube_vao])
+        if self.particle_vao:
+            glDeleteVertexArrays(1, [self.particle_vao])
 
         if self.bg_texture:
             glDeleteTextures(1, [self.bg_texture])
