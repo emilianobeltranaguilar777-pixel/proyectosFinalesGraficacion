@@ -298,6 +298,8 @@ class PizarraNeon:
              "color": self.colores['azul_electrico']},
             {"prefijo": "[2]", "texto": "GESTURE MODULE", "desc": "3D Hand Recognition & Figure Control",
              "color": self.colores['cyan_tech']},
+            {"prefijo": "[3]", "texto": "AR FILTER", "desc": "Face Filter with OpenGL (Snapchat-style)",
+             "color": self.colores['verde_matrix']},
             {"prefijo": "[Q]", "texto": "EXIT", "desc": "Shutdown System",
              "color": self.colores['gris_tech']}
         ]
@@ -430,6 +432,8 @@ class PizarraNeon:
         elif key == ord('2'):
             self.modo_actual = "gestos"
             print("[ MODE ] Gesture Recognition: ACTIVATED")
+        elif key == ord('3') and self.modo_actual == "menu":
+            self._lanzar_ar_filter()
         elif key == ord('m'):
             self.modo_actual = "menu"
             print("[ MODE ] Main Menu: LOADED")
@@ -504,6 +508,38 @@ class PizarraNeon:
         elif key == ord('s'):
             self.gesture_3d.toggle_scale_mode()
 
+    def _lanzar_ar_filter(self):
+        """Lanza el filtro AR liberando la cámara primero."""
+        print("[ MODE ] AR Filter: LAUNCHING...")
+
+        # Liberar cámara OpenCV
+        if self.cap:
+            self.cap.release()
+            self.cap = None
+        cv2.destroyAllWindows()
+
+        try:
+            from ar_filter.gl_app import run_ar_filter
+            run_ar_filter(camera_index=0)
+        except ImportError as e:
+            print(f"[ ERROR ] AR Filter not available: {e}")
+        except Exception as e:
+            print(f"[ ERROR ] AR Filter crashed: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # Restaurar cámara y ventana
+        print("[ MODE ] Returning to main menu...")
+        self.cap = cv2.VideoCapture(0)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.ancho)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.alto)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        cv2.namedWindow('NEURAL CANVAS v2.1', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('NEURAL CANVAS v2.1', 1200, 700)
+        self.modo_actual = "menu"
+
     def _actualizar_neon_menu(self, dt):
         """Sincroniza gestos con el menú neon sin bloquear la app."""
 
@@ -536,6 +572,7 @@ class PizarraNeon:
         print("║  SISTEMA INICIADO CORRECTAMENTE      ║")
         print("║  [1] Color Tracking                  ║")
         print("║  [2] Gesture Recognition             ║")
+        print("║  [3] AR Filter (OpenGL)              ║")
         print("║  [M] Main Menu                       ║")
         print("║  [Q] Shutdown                        ║")
         print("╚═══════════════════════════════════════╝\n")
