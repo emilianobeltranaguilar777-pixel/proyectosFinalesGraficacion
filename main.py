@@ -60,6 +60,15 @@ class PizarraNeon:
             'verde_seleccion': (0, 180, 0)
         }
 
+        # Zonas de escala espacial (porcentajes del ancho/alto)
+        self.scale_zone_left_pct = 0.33   # 0-33% ancho = zona reducir
+        self.scale_zone_right_pct = 0.67  # 67-100% ancho = zona aumentar
+        self.scale_zone_margin_top_pct = 0.12  # margen superior
+        self.scale_zone_margin_bottom_pct = 0.12  # margen inferior
+
+        # Estado de scale lock
+        self.scale_lock_active = False
+
     def _crear_neon_menu(self):
         """Configura el menú neon con callbacks de figuras."""
 
@@ -276,6 +285,112 @@ class PizarraNeon:
         pts = np.array([[x, y + size // 2], [x - size, y - size // 3], [x + size, y - size // 3]], np.int32)
         cv2.polylines(frame, [pts], True, color, 1, cv2.LINE_AA)
 
+    def dibujar_zonas_escala(self, frame):
+        """Dibuja overlays de zonas de escala cuando está en modo SCALE con figura seleccionada."""
+        # Solo dibujar si hay figura seleccionada y modo SCALE activo
+        if not self.gesture_3d.selected_figure:
+            return
+        if self.gesture_3d.selection_mode != SelectionMode.SCALE:
+            return
+
+        # Calcular límites de zonas
+        zone_left_max = int(self.ancho * self.scale_zone_left_pct)
+        zone_right_min = int(self.ancho * self.scale_zone_right_pct)
+        margin_top = int(self.alto * self.scale_zone_margin_top_pct)
+        margin_bottom = int(self.alto * self.scale_zone_margin_bottom_pct)
+        zone_top = margin_top
+        zone_bottom = self.alto - margin_bottom
+
+        # Colores semitransparentes
+        color_left = (80, 80, 255)   # Rojo-ish para reducir
+        color_right = (80, 255, 80)  # Verde para aumentar
+        alpha = 0.25
+
+        overlay = frame.copy()
+
+        # Zona izquierda (reducir)
+        cv2.rectangle(overlay, (0, zone_top), (zone_left_max, zone_bottom), color_left, -1)
+        # Zona derecha (aumentar)
+        cv2.rectangle(overlay, (zone_right_min, zone_top), (self.ancho, zone_bottom), color_right, -1)
+
+        cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+
+        # Bordes de las zonas
+        cv2.rectangle(frame, (0, zone_top), (zone_left_max, zone_bottom), color_left, 2, cv2.LINE_AA)
+        cv2.rectangle(frame, (zone_right_min, zone_top), (self.ancho, zone_bottom), color_right, 2, cv2.LINE_AA)
+
+        # Etiquetas
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 1.0
+        thickness = 2
+
+        # Etiqueta zona izquierda "- SIZE"
+        label_left = "- SIZE"
+        (tw, th), _ = cv2.getTextSize(label_left, font, font_scale, thickness)
+        lx = zone_left_max // 2 - tw // 2
+        ly = (zone_top + zone_bottom) // 2 + th // 2
+        cv2.putText(frame, label_left, (lx, ly), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+
+        # Etiqueta zona derecha "+ SIZE"
+        label_right = "+ SIZE"
+        (tw, th), _ = cv2.getTextSize(label_right, font, font_scale, thickness)
+        rx = zone_right_min + (self.ancho - zone_right_min) // 2 - tw // 2
+        ry = (zone_top + zone_bottom) // 2 + th // 2
+        cv2.putText(frame, label_right, (rx, ry), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+
+        # Hint superior "SCALE MODE"
+        hint = "[ SCALE MODE - Pinch in zones to resize ]"
+        (tw, th), _ = cv2.getTextSize(hint, font, 0.6, 1)
+        hx = self.ancho // 2 - tw // 2
+        hy = margin_top - 10 if margin_top > 30 else 25
+        cv2.putText(frame, hint, (hx, hy), font, 0.6, (0, 200, 255), 1, cv2.LINE_AA)
+
+    def _calcular_scale_lock(self, pinch_position):
+        """Calcula si scale_lock_active debe estar activo.
+
+        Condiciones:
+        - Modo SCALE activo
+        - Figura seleccionada
+        - Pinch activo
+        - Pinch dentro de las zonas de escala (izquierda o derecha)
+        """
+        if self.gesture_3d.selection_mode != SelectionMode.SCALE:
+            return False
+        if not self.gesture_3d.selected_figure:
+            return False
+        if not self.gesture_3d.pinch_active:
+            return False
+        if not pinch_position:
+            return False
+
+        px, py = pinch_position
+        zone_left_max = int(self.ancho * self.scale_zone_left_pct)
+        zone_right_min = int(self.ancho * self.scale_zone_right_pct)
+        margin_top = int(self.alto * self.scale_zone_margin_top_pct)
+        margin_bottom = int(self.alto * self.scale_zone_margin_bottom_pct)
+
+        # Verificar si está dentro de los márgenes verticales
+        if py < margin_top or py > (self.alto - margin_bottom):
+            return False
+
+        # Verificar si está en zona izquierda o derecha
+        in_left_zone = px < zone_left_max
+        in_right_zone = px > zone_right_min
+
+        return in_left_zone or in_right_zone
+
+    def _manejar_escala_bloqueada(self, dt, pinch_position):
+        """Maneja el escalado cuando scale_lock está activo.
+
+        Solo aplica escala espacial, sin permitir otras interacciones.
+        """
+        zone_left_max = int(self.ancho * self.scale_zone_left_pct)
+        zone_right_min = int(self.ancho * self.scale_zone_right_pct)
+
+        self.gesture_3d.handle_figure_scaling_by_spatial(
+            pinch_position, dt, zone_left_max, zone_right_min
+        )
+
     def dibujar_menu_principal(self, frame):
         """Menú principal optimizado"""
         frame[:] = self.colores['fondo']
@@ -388,34 +503,88 @@ class PizarraNeon:
         dt = now - self.ultimo_dt
         self.ultimo_dt = now
 
-        # Evitar rotación cuando el menú está activo
-        menu_activo = self.neon_menu.is_visible()
-        self.gesture_3d.set_rotation_enabled(not menu_activo)
-        self.gesture_3d.set_external_menu_active(menu_activo)
+        # Obtener posición de pinch para calcular scale lock
+        pinch_position = self.gesture_3d.last_pinch_position
 
-        profile = {} if self.debug_perf else None
-        frame_procesado = self.gesture_3d.process_frame(frame, profile=profile)
+        # Calcular scale_lock_active ANTES de procesar gestos
+        self.scale_lock_active = self._calcular_scale_lock(pinch_position)
 
-        update_start = time.perf_counter()
-        self._actualizar_neon_menu(dt)
-        menu_activo = self.neon_menu.is_visible()
-        self.gesture_3d.set_rotation_enabled(not menu_activo)
-        self.gesture_3d.set_external_menu_active(menu_activo)
-        menu_update_dt = time.perf_counter() - update_start
+        if self.scale_lock_active:
+            # SCALE LOCK ACTIVO: bloquear todas las interacciones excepto escala
+            # Cerrar el menú si está abierto
+            if self.neon_menu.is_visible():
+                self.neon_menu.close()
 
-        menu_draw_start = time.perf_counter()
-        self.neon_menu.draw(frame_procesado)
-        menu_draw_dt = time.perf_counter() - menu_draw_start
+            # Deshabilitar rotación
+            self.gesture_3d.set_rotation_enabled(False)
+            self.gesture_3d.set_external_menu_active(True)  # Previene interacciones
+
+            # Procesar solo detección de gestos (para mantener tracking visual)
+            # pero sin manejar las acciones normales
+            profile = {} if self.debug_perf else None
+            gesture, raw_pinch, hand_landmarks = self.gesture_3d.detect_gestures(frame)
+            self.gesture_3d.current_gesture = gesture
+
+            # Actualizar pinch position filtrada
+            filtered_pinch = self.gesture_3d.pinch_filter.update(raw_pinch)
+            if filtered_pinch:
+                self.gesture_3d.last_pinch_position = filtered_pinch
+                pinch_position = filtered_pinch
+
+            # Manejar solo la escala bloqueada
+            self._manejar_escala_bloqueada(dt, pinch_position)
+
+            # Dibujar interfaz (figuras, landmarks, etc.)
+            self.gesture_3d.draw_interface(frame, gesture, pinch_position, hand_landmarks)
+            frame_procesado = frame
+
+            if self.debug_perf:
+                self.perf_metrics = {
+                    "total": time.perf_counter() - now,
+                    "detect": 0.0,
+                    "handle": 0.0,
+                    "draw_figures": 0.0,
+                    "menu_update": 0.0,
+                    "menu_draw": 0.0,
+                }
+        else:
+            # Flujo normal sin scale lock
+            # Resetear estado de escala espacial si no hay lock
+            self.gesture_3d.reset_spatial_scale_state()
+
+            # Evitar rotación cuando el menú está activo
+            menu_activo = self.neon_menu.is_visible()
+            self.gesture_3d.set_rotation_enabled(not menu_activo)
+            self.gesture_3d.set_external_menu_active(menu_activo)
+
+            profile = {} if self.debug_perf else None
+            frame_procesado = self.gesture_3d.process_frame(frame, profile=profile)
+
+            update_start = time.perf_counter()
+            self._actualizar_neon_menu(dt)
+            menu_activo = self.neon_menu.is_visible()
+            self.gesture_3d.set_rotation_enabled(not menu_activo)
+            self.gesture_3d.set_external_menu_active(menu_activo)
+            menu_update_dt = time.perf_counter() - update_start
+
+            menu_draw_start = time.perf_counter()
+            self.neon_menu.draw(frame_procesado)
+            menu_draw_dt = time.perf_counter() - menu_draw_start
+
+            if self.debug_perf:
+                self.perf_metrics = {
+                    "total": time.perf_counter() - now,
+                    "detect": profile.get("detect", 0.0) if profile else 0.0,
+                    "handle": profile.get("handle", 0.0) if profile else 0.0,
+                    "draw_figures": profile.get("draw_figures", 0.0) if profile else 0.0,
+                    "menu_update": menu_update_dt,
+                    "menu_draw": menu_draw_dt,
+                }
+
+        # Dibujar zonas de escala (solo visible en modo SCALE con figura seleccionada)
+        self.dibujar_zonas_escala(frame_procesado)
 
         if self.debug_perf:
-            self.perf_metrics = {
-                "total": time.perf_counter() - now,
-                "detect": profile.get("detect", 0.0) if profile else 0.0,
-                "handle": profile.get("handle", 0.0) if profile else 0.0,
-                "draw_figures": profile.get("draw_figures", 0.0) if profile else 0.0,
-                "menu_update": menu_update_dt,
-                "menu_draw": menu_draw_dt,
-            }
             self._dibujar_overlay_perf(frame_procesado)
 
         return frame_procesado
@@ -484,6 +653,22 @@ class PizarraNeon:
         """Procesa teclas específicas del modo gestos"""
         posicion_central = (self.ancho // 2, self.alto // 2)
 
+        # Si scale_lock está activo, solo permitir teclas de salida (s, e)
+        if self.scale_lock_active:
+            if key == ord('s'):
+                self.gesture_3d.toggle_scale_mode()
+                self.gesture_3d.reset_spatial_scale_state()
+                print("[ SCALE LOCK ] Exiting scale mode")
+            elif key == ord('e'):
+                # Alias para salir del modo escala
+                if self.gesture_3d.selection_mode == SelectionMode.SCALE:
+                    self.gesture_3d.toggle_scale_mode()
+                    self.gesture_3d.reset_spatial_scale_state()
+                    print("[ SCALE LOCK ] Exiting scale mode")
+            # Ignorar otras teclas durante scale lock
+            return
+
+        # Flujo normal cuando no hay scale lock
         if key == ord('1'):
             self.gesture_3d.create_figure_by_key('circle', posicion_central)
             print("[ ACTION ] Circle created")
@@ -507,6 +692,11 @@ class PizarraNeon:
             print("[ ACTION ] Selected figure deleted")
         elif key == ord('s'):
             self.gesture_3d.toggle_scale_mode()
+        elif key == ord('e'):
+            # Alias para salir del modo escala
+            if self.gesture_3d.selection_mode == SelectionMode.SCALE:
+                self.gesture_3d.toggle_scale_mode()
+                print("[ ACTION ] Exited scale mode")
 
     def _lanzar_ar_filter(self):
         """Lanza el filtro AR liberando la cámara primero."""
