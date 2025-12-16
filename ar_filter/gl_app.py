@@ -126,6 +126,7 @@ class ARFilterApp:
         self.mesh_shader_program = None
         self.mesh_vao = None
         self.mesh_vbo = None
+        self.mesh_vbo_bytes = 0  # Track allocated size for dynamic realloc
         self.show_debug_mesh = True  # Toggle with 'D' key
 
         # State
@@ -364,14 +365,16 @@ class ARFilterApp:
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
 
-        # FaceMesh debug geometry (dynamic VBO)
+        # FaceMesh debug geometry (dynamic VBO - size allocated on first use)
         self.mesh_vao = glGenVertexArrays(1)
         glBindVertexArray(self.mesh_vao)
 
         self.mesh_vbo = glGenBuffers(1)
         glBindBuffer(GL_ARRAY_BUFFER, self.mesh_vbo)
-        # Pre-allocate for 468 landmarks * 2 floats (x, y)
-        glBufferData(GL_ARRAY_BUFFER, 468 * 2 * 4, None, GL_DYNAMIC_DRAW)
+        # Pre-allocate for 478 landmarks (refine_landmarks=True includes iris)
+        initial_size = 478 * 2 * 4
+        glBufferData(GL_ARRAY_BUFFER, initial_size, None, GL_DYNAMIC_DRAW)
+        self.mesh_vbo_bytes = initial_size
 
         mesh_pos_loc = glGetAttribLocation(self.mesh_shader_program, "position")
         glEnableVertexAttribArray(mesh_pos_loc)
@@ -514,7 +517,7 @@ class ARFilterApp:
         Render FaceMesh landmarks for debugging.
 
         Draws:
-        - All 468 landmarks as points (green)
+        - All landmarks as points (green) - supports 468 or 478 (with iris)
         - Face contour as lines (white)
         - Lips as lines (cyan)
         - Eyes and eyebrows as lines (yellow)
@@ -534,9 +537,18 @@ class ARFilterApp:
             [(1.0 - lm[0], lm[1]) for lm in landmarks],
             dtype=np.float32
         )
+        # Ensure contiguous memory layout for OpenGL
+        points_2d = np.ascontiguousarray(points_2d)
 
         glBindBuffer(GL_ARRAY_BUFFER, self.mesh_vbo)
-        glBufferSubData(GL_ARRAY_BUFFER, 0, points_2d.nbytes, points_2d)
+
+        # Reallocate VBO if landmark count changed (468 vs 478 with iris)
+        needed_bytes = points_2d.nbytes
+        if needed_bytes > self.mesh_vbo_bytes:
+            glBufferData(GL_ARRAY_BUFFER, needed_bytes, None, GL_DYNAMIC_DRAW)
+            self.mesh_vbo_bytes = needed_bytes
+
+        glBufferSubData(GL_ARRAY_BUFFER, 0, needed_bytes, points_2d)
 
         color_loc = glGetUniformLocation(self.mesh_shader_program, "meshColor")
 
