@@ -80,6 +80,10 @@ class Gesture3D:
         self.size_smoothing = 0.2
         self.previous_sizes = {}
 
+        # Estado para escala espacial por zonas
+        self._scale_zone_active = False
+        self._spatial_scale_speed = 150.0  # pixels/segundo de cambio de tamaño
+
         # Configuración de colores
         self.colors = [
             (255, 120, 0),  # Azul eléctrico
@@ -353,6 +357,71 @@ class Gesture3D:
             return 1 + (scale_factor - 1) * 0.7  # Más suave al agrandar
         else:
             return 1 - (1 - scale_factor) * 0.5  # Más suave al reducir
+
+    def handle_figure_scaling_by_spatial(self, pinch_position, dt, zone_left_max, zone_right_min):
+        """
+        Escala figura seleccionada basándose en la posición horizontal del pinch.
+
+        Args:
+            pinch_position: (x, y) posición actual del pinch
+            dt: delta time del frame (segundos)
+            zone_left_max: límite derecho de zona izquierda (ej: 0.33 * width)
+            zone_right_min: límite izquierdo de zona derecha (ej: 0.67 * width)
+
+        Returns:
+            True si se está escalando activamente, False si no está en zona de escala
+        """
+        if not self.selected_figure or not pinch_position:
+            self._scale_zone_active = False
+            return False
+
+        px, _ = pinch_position
+        center_x = self.width / 2.0
+
+        # Determinar si está en zona de escala
+        in_left_zone = px < zone_left_max
+        in_right_zone = px > zone_right_min
+
+        if not (in_left_zone or in_right_zone):
+            self._scale_zone_active = False
+            return False
+
+        self._scale_zone_active = True
+
+        # Calcular delta de escala proporcional a distancia del centro
+        if in_left_zone:
+            # Zona izquierda: reducir tamaño
+            distance_from_edge = zone_left_max - px
+            max_distance = zone_left_max
+            normalized = distance_from_edge / max_distance if max_distance > 0 else 0
+            size_delta = -self._spatial_scale_speed * normalized * dt
+        else:
+            # Zona derecha: aumentar tamaño
+            distance_from_edge = px - zone_right_min
+            max_distance = self.width - zone_right_min
+            normalized = distance_from_edge / max_distance if max_distance > 0 else 0
+            size_delta = self._spatial_scale_speed * normalized * dt
+
+        # Aplicar cambio de tamaño con clamping
+        current_size = self.selected_figure['size']
+        new_size = current_size + size_delta
+        new_size = max(self.min_figure_size, min(self.max_figure_size, new_size))
+        self.selected_figure['size'] = int(new_size)
+
+        return True
+
+    def reset_spatial_scale_state(self):
+        """Resetea el estado de escala espacial por zonas."""
+        self._scale_zone_active = False
+
+    def reset_angular_scale_state(self):
+        """Resetea el estado de escala angular (por distancia de dedos)."""
+        self.scale_reference_distance = 0
+        self.scale_original_size = 0
+
+    def is_spatial_scale_active(self):
+        """Retorna True si el escalado espacial está activo."""
+        return self._scale_zone_active
 
     def set_rotation_enabled(self, enabled: bool):
         """Habilita o deshabilita la rotación continua de figuras."""

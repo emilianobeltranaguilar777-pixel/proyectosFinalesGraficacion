@@ -20,6 +20,16 @@ def _install_fake_cv2():
         FONT_HERSHEY_SIMPLEX=0,
         WINDOW_NORMAL=0,
         COLOR_BGR2RGB=0,
+        COLOR_HSV2BGR=0,
+        COLOR_BGR2HSV=0,
+        CAP_PROP_FRAME_WIDTH=3,
+        CAP_PROP_FRAME_HEIGHT=4,
+        CAP_PROP_FPS=5,
+        CAP_PROP_BUFFERSIZE=38,
+        MORPH_OPEN=0,
+        MORPH_CLOSE=0,
+        RETR_EXTERNAL=0,
+        CHAIN_APPROX_SIMPLE=0,
     )
 
     def _return_img(img, *_, **__):
@@ -30,19 +40,33 @@ def _install_fake_cv2():
     fake_cv2.circle = _return_img
     fake_cv2.rectangle = _return_img
     fake_cv2.polylines = _return_img
+    fake_cv2.ellipse = _return_img
     fake_cv2.cvtColor = lambda img, *_args, **_kwargs: img
     fake_cv2.GaussianBlur = lambda img, *_args, **_kwargs: img
     fake_cv2.addWeighted = lambda src1, alpha, src2, beta, gamma, dst=None: src1 if dst is None else dst
-    fake_cv2.resize = lambda img, size: np.zeros((size[1], size[0], img.shape[2]), dtype=img.dtype)
+    fake_cv2.resize = lambda img, size: np.zeros((size[1], size[0], 3), dtype=np.uint8)
     fake_cv2.flip = _return_img
     fake_cv2.namedWindow = lambda *_, **__: None
     fake_cv2.resizeWindow = lambda *_, **__: None
     fake_cv2.waitKey = lambda *_: 0
+    fake_cv2.destroyAllWindows = lambda: None
+    fake_cv2.imshow = lambda *_, **__: None
+    fake_cv2.getTextSize = lambda text, font, scale, thick: ((100, 20), 5)
+    fake_cv2.getTickCount = lambda: 0
+    fake_cv2.getTickFrequency = lambda: 1e9
+    fake_cv2.inRange = lambda img, low, high: np.zeros(img.shape[:2], dtype=np.uint8)
+    fake_cv2.morphologyEx = lambda img, op, kernel: img
+    fake_cv2.getStructuringElement = lambda shape, size: np.ones(size, dtype=np.uint8)
+    fake_cv2.findContours = lambda img, mode, method: ([], None)
+    fake_cv2.contourArea = lambda cnt: 0
+    fake_cv2.moments = lambda cnt: {'m00': 0, 'm10': 0, 'm01': 0}
     fake_cv2.VideoCapture = lambda *_, **__: types.SimpleNamespace(
-        isOpened=lambda: False, read=lambda: (False, None), set=lambda *a, **k: None
+        isOpened=lambda: False, read=lambda: (False, None),
+        set=lambda *a, **k: None, release=lambda: None
     )
 
     sys.modules["cv2"] = fake_cv2
+    return fake_cv2
 
 
 # Agregar el directorio raiz al path
