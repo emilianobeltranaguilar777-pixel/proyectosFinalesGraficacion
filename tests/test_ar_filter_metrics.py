@@ -17,6 +17,10 @@ from ar_filter.metrics import (
     halo_sphere_positions,
     mouth_rect_scale,
     mouth_rect_color,
+    forehead_center,
+    mouth_center,
+    mouth_width,
+    halo_sphere_positions_v2,
 )
 
 
@@ -291,3 +295,113 @@ class TestMouthRectColor:
                                  closed_color=(0.0, 0.0, 0.0),
                                  open_color=(1.0, 1.0, 1.0))
         assert color == (1.0, 1.0, 1.0)
+
+
+class TestForeheadCenter:
+    """Tests for forehead_center function."""
+
+    def test_forehead_center_empty(self):
+        """Empty landmarks should return default."""
+        center = forehead_center([])
+        assert center == (0.5, 0.3, 0.0)
+
+    def test_forehead_center_valid(self):
+        """Valid landmarks should return forehead position."""
+        landmarks = [(0.0, 0.0, 0.0)] * 500
+        landmarks[10] = (0.5, 0.2, 0.1)  # Forehead landmark
+
+        center = forehead_center(landmarks)
+        assert center == (0.5, 0.2, 0.1)
+
+    def test_forehead_center_custom_index(self):
+        """Custom index should be used."""
+        landmarks = [(0.0, 0.0, 0.0)] * 500
+        landmarks[151] = (0.6, 0.25, 0.0)
+
+        center = forehead_center(landmarks, forehead_idx=151)
+        assert center == (0.6, 0.25, 0.0)
+
+
+class TestMouthCenter:
+    """Tests for mouth_center function."""
+
+    def test_mouth_center_empty(self):
+        """Empty landmarks should return default."""
+        center = mouth_center([])
+        assert center == (0.5, 0.7, 0.0)
+
+    def test_mouth_center_valid(self):
+        """Valid landmarks should return center of mouth."""
+        landmarks = [(0.0, 0.0, 0.0)] * 500
+        landmarks[13] = (0.5, 0.6, 0.0)   # Top lip
+        landmarks[14] = (0.5, 0.7, 0.0)   # Bottom lip
+        landmarks[61] = (0.4, 0.65, 0.0)  # Left corner
+        landmarks[291] = (0.6, 0.65, 0.0) # Right corner
+
+        center = mouth_center(landmarks)
+
+        # X should be average of corners: (0.4 + 0.6) / 2 = 0.5
+        assert abs(center[0] - 0.5) < 0.001
+        # Y should be average of lips: (0.6 + 0.7) / 2 = 0.65
+        assert abs(center[1] - 0.65) < 0.001
+
+
+class TestMouthWidth:
+    """Tests for mouth_width function."""
+
+    def test_mouth_width_empty(self):
+        """Empty landmarks should return default."""
+        width = mouth_width([])
+        assert width == 0.1
+
+    def test_mouth_width_valid(self):
+        """Valid landmarks should return correct width."""
+        landmarks = [(0.0, 0.0, 0.0)] * 500
+        landmarks[61] = (0.3, 0.5, 0.0)   # Left corner
+        landmarks[291] = (0.7, 0.5, 0.0)  # Right corner
+
+        width = mouth_width(landmarks)
+        assert abs(width - 0.4) < 0.001
+
+    def test_mouth_width_diagonal(self):
+        """Width should handle diagonal mouth."""
+        landmarks = [(0.0, 0.0, 0.0)] * 500
+        landmarks[61] = (0.0, 0.0, 0.0)
+        landmarks[291] = (0.3, 0.4, 0.0)
+
+        width = mouth_width(landmarks)
+        expected = math.sqrt(0.3**2 + 0.4**2)  # 0.5
+        assert abs(width - expected) < 0.001
+
+
+class TestHaloSpherePositionsV2:
+    """Tests for halo_sphere_positions_v2 function."""
+
+    def test_halo_v2_empty(self):
+        """Zero spheres should return empty list."""
+        positions = halo_sphere_positions_v2((0.5, 0.3, 0.0), 0.1, 0, 0.0)
+        assert positions == []
+
+    def test_halo_v2_count(self):
+        """Should return correct number of positions."""
+        positions = halo_sphere_positions_v2((0.5, 0.3, 0.0), 0.1, 8, 0.0)
+        assert len(positions) == 8
+
+    def test_halo_v2_above_forehead(self):
+        """Spheres should be positioned above the forehead."""
+        forehead = (0.5, 0.3, 0.0)
+        height_offset = 0.08
+        positions = halo_sphere_positions_v2(forehead, 0.1, 4, 0.0, height_offset)
+
+        # All Y positions should be above (less than) forehead Y
+        for pos in positions:
+            assert pos[1] < forehead[1]
+            assert abs(pos[1] - (forehead[1] - height_offset)) < 0.001
+
+    def test_halo_v2_rotation(self):
+        """Different rotation angles should produce different positions."""
+        pos1 = halo_sphere_positions_v2((0.5, 0.3, 0.0), 0.1, 4, 0.0)
+        pos2 = halo_sphere_positions_v2((0.5, 0.3, 0.0), 0.1, 4, math.pi / 4)
+
+        # First position X should be different
+        assert pos1[0][0] != pos2[0][0]

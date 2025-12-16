@@ -218,3 +218,123 @@ def mouth_rect_color(openness: float,
     g = lerp(closed_color[1], open_color[1], openness)
     b = lerp(closed_color[2], open_color[2], openness)
     return (r, g, b)
+
+
+def forehead_center(landmarks: List[Tuple[float, float, float]],
+                    forehead_idx: int = 10) -> Tuple[float, float, float]:
+    """
+    Get forehead center position for halo placement.
+
+    Uses landmark 10 (top of forehead) which is more stable for
+    positioning elements above the head.
+
+    Args:
+        landmarks: List of (x, y, z) normalized landmark coordinates
+        forehead_idx: Index of forehead landmark (default 10)
+
+    Returns:
+        (x, y, z) position of forehead center
+    """
+    if not landmarks or len(landmarks) <= forehead_idx:
+        return (0.5, 0.3, 0.0)
+
+    return landmarks[forehead_idx]
+
+
+def mouth_center(landmarks: List[Tuple[float, float, float]],
+                 top_lip_idx: int = 13,
+                 bottom_lip_idx: int = 14,
+                 left_corner_idx: int = 61,
+                 right_corner_idx: int = 291) -> Tuple[float, float, float]:
+    """
+    Calculate the true center of the mouth using multiple landmarks.
+
+    Uses lip center and corners for accurate positioning.
+
+    Args:
+        landmarks: List of (x, y, z) normalized landmark coordinates
+        top_lip_idx: Index of top lip center
+        bottom_lip_idx: Index of bottom lip center
+        left_corner_idx: Index of left mouth corner
+        right_corner_idx: Index of right mouth corner
+
+    Returns:
+        (x, y, z) center position of mouth
+    """
+    required_max = max(top_lip_idx, bottom_lip_idx, left_corner_idx, right_corner_idx)
+    if not landmarks or len(landmarks) <= required_max:
+        return (0.5, 0.7, 0.0)
+
+    top = landmarks[top_lip_idx]
+    bottom = landmarks[bottom_lip_idx]
+    left = landmarks[left_corner_idx]
+    right = landmarks[right_corner_idx]
+
+    # Center X is average of corners, Y is average of top/bottom lips
+    center_x = (left[0] + right[0]) / 2.0
+    center_y = (top[1] + bottom[1]) / 2.0
+    center_z = (top[2] + bottom[2]) / 2.0
+
+    return (center_x, center_y, center_z)
+
+
+def mouth_width(landmarks: List[Tuple[float, float, float]],
+                left_corner_idx: int = 61,
+                right_corner_idx: int = 291) -> float:
+    """
+    Calculate mouth width from corner to corner.
+
+    Args:
+        landmarks: List of (x, y, z) normalized landmark coordinates
+        left_corner_idx: Index of left mouth corner
+        right_corner_idx: Index of right mouth corner
+
+    Returns:
+        Width of mouth as distance between corners
+    """
+    if not landmarks or len(landmarks) <= max(left_corner_idx, right_corner_idx):
+        return 0.1
+
+    left = landmarks[left_corner_idx]
+    right = landmarks[right_corner_idx]
+
+    dx = right[0] - left[0]
+    dy = right[1] - left[1]
+
+    return math.sqrt(dx * dx + dy * dy)
+
+
+def halo_sphere_positions_v2(forehead: Tuple[float, float, float],
+                              radius: float,
+                              num_spheres: int,
+                              rotation_angle: float,
+                              height_offset: float = 0.08) -> List[Tuple[float, float, float]]:
+    """
+    Calculate positions of spheres arranged in a halo above the forehead.
+
+    This version uses the forehead position directly for better placement.
+
+    Args:
+        forehead: (x, y, z) position of forehead center
+        radius: Radius of the halo ring
+        num_spheres: Number of spheres in the halo
+        rotation_angle: Current rotation angle in radians
+        height_offset: How far above forehead to place the halo
+
+    Returns:
+        List of (x, y, z) positions for each sphere
+    """
+    if num_spheres <= 0:
+        return []
+
+    positions = []
+    angle_step = (2.0 * math.pi) / num_spheres
+
+    for i in range(num_spheres):
+        angle = rotation_angle + (i * angle_step)
+        x = forehead[0] + radius * math.cos(angle)
+        y = forehead[1] - height_offset  # Above the forehead (Y decreases upward)
+        z = forehead[2] + radius * math.sin(angle) * 0.4  # Slight ellipse for depth
+        positions.append((x, y, z))
+
+    return positions

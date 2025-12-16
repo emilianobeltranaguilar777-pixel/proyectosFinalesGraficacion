@@ -36,9 +36,30 @@ from .face_tracker import FaceTracker, FaceLandmarks
 from .metrics import (
     face_width, halo_radius, mouth_openness, face_center,
     halo_sphere_positions, mouth_rect_scale, mouth_rect_color,
-    smooth_value, clamp
+    smooth_value, clamp, forehead_center, mouth_center, mouth_width,
+    halo_sphere_positions_v2
 )
 from .primitives import build_sphere, build_quad
+
+
+# MediaPipe FaceMesh connection indices for debug visualization
+# These define the lines connecting landmarks for face contour, lips, etc.
+FACE_OVAL_PATH = [
+    10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
+    397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
+    172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109, 10
+]
+LIPS_PATH = [
+    61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291,
+    61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291,
+    78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308,
+    78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308
+]
+LEFT_EYE_PATH = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246, 33]
+RIGHT_EYE_PATH = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398, 362]
+LEFT_EYEBROW_PATH = [46, 53, 52, 65, 55, 107, 66, 105, 63, 70]
+RIGHT_EYEBROW_PATH = [276, 283, 282, 295, 285, 336, 296, 334, 293, 300]
+NOSE_PATH = [168, 6, 197, 195, 5, 4, 1, 19, 94, 2]
 
 
 class ARFilterApp:
@@ -101,6 +122,12 @@ class ARFilterApp:
         self.quad_ibo = None
         self.quad_index_count = 0
 
+        # FaceMesh debug rendering
+        self.mesh_shader_program = None
+        self.mesh_vao = None
+        self.mesh_vbo = None
+        self.show_debug_mesh = True  # Toggle with 'D' key
+
         # State
         self.running = False
         self.halo_angle = 0.0
@@ -145,6 +172,10 @@ class ARFilterApp:
         """Handle key events."""
         if key == glfw.KEY_ESCAPE and action == glfw.PRESS:
             self.running = False
+        elif key == glfw.KEY_D and action == glfw.PRESS:
+            self.show_debug_mesh = not self.show_debug_mesh
+            state = "ON" if self.show_debug_mesh else "OFF"
+            print(f"[DEBUG] FaceMesh visualization: {state}")
 
     def _init_camera(self) -> bool:
         """Initialize OpenCV camera."""
@@ -200,6 +231,34 @@ class ARFilterApp:
             bg_vert = gl_shaders.compileShader(bg_vert_src, GL_VERTEX_SHADER)
             bg_frag = gl_shaders.compileShader(bg_frag_src, GL_FRAGMENT_SHADER)
             self.bg_shader_program = gl_shaders.compileProgram(bg_vert, bg_frag)
+
+            # FaceMesh debug shader (simple 2D points/lines)
+            mesh_vert_src = """
+            #version 150 core
+            in vec2 position;
+            uniform vec2 screenSize;
+            void main() {
+                // Convert normalized coords [0,1] to clip space [-1,1]
+                // Note: Y is flipped (0 at top in normalized, -1 at bottom in clip)
+                vec2 clipPos = position * 2.0 - 1.0;
+                clipPos.y = -clipPos.y;  // Flip Y
+                gl_Position = vec4(clipPos, 0.0, 1.0);
+                gl_PointSize = 3.0;
+            }
+            """
+
+            mesh_frag_src = """
+            #version 150 core
+            out vec4 outColor;
+            uniform vec3 meshColor;
+            void main() {
+                outColor = vec4(meshColor, 1.0);
+            }
+            """
+
+            mesh_vert = gl_shaders.compileShader(mesh_vert_src, GL_VERTEX_SHADER)
+            mesh_frag = gl_shaders.compileShader(mesh_frag_src, GL_FRAGMENT_SHADER)
+            self.mesh_shader_program = gl_shaders.compileProgram(mesh_vert, mesh_frag)
 
             return True
 
@@ -304,6 +363,21 @@ class ARFilterApp:
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+
+        # FaceMesh debug geometry (dynamic VBO)
+        self.mesh_vao = glGenVertexArrays(1)
+        glBindVertexArray(self.mesh_vao)
+
+        self.mesh_vbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.mesh_vbo)
+        # Pre-allocate for 468 landmarks * 2 floats (x, y)
+        glBufferData(GL_ARRAY_BUFFER, 468 * 2 * 4, None, GL_DYNAMIC_DRAW)
+
+        mesh_pos_loc = glGetAttribLocation(self.mesh_shader_program, "position")
+        glEnableVertexAttribArray(mesh_pos_loc)
+        glVertexAttribPointer(mesh_pos_loc, 2, GL_FLOAT, GL_FALSE, 0, None)
+
+        glBindVertexArray(0)
 
     def _create_projection_matrix(self) -> np.ndarray:
         """Create orthographic projection matrix."""
@@ -435,21 +509,108 @@ class ARFilterApp:
         glDrawElements(GL_TRIANGLES, self.quad_index_count, GL_UNSIGNED_INT, None)
         glBindVertexArray(0)
 
+    def _render_facemesh_debug(self, landmarks: List[Tuple[float, float, float]]):
+        """
+        Render FaceMesh landmarks for debugging.
+
+        Draws:
+        - All 468 landmarks as points (green)
+        - Face contour as lines (white)
+        - Lips as lines (cyan)
+        - Eyes and eyebrows as lines (yellow)
+        """
+        if not landmarks or len(landmarks) < 468:
+            return
+
+        glUseProgram(self.mesh_shader_program)
+
+        # Enable point size (for GL_POINTS)
+        glEnable(GL_PROGRAM_POINT_SIZE)
+
+        # Update VBO with current landmark positions
+        # Convert to 2D array: [(x1, y1), (x2, y2), ...]
+        # Need to flip X because camera is mirrored
+        points_2d = np.array(
+            [(1.0 - lm[0], lm[1]) for lm in landmarks],
+            dtype=np.float32
+        )
+
+        glBindBuffer(GL_ARRAY_BUFFER, self.mesh_vbo)
+        glBufferSubData(GL_ARRAY_BUFFER, 0, points_2d.nbytes, points_2d)
+
+        color_loc = glGetUniformLocation(self.mesh_shader_program, "meshColor")
+
+        glBindVertexArray(self.mesh_vao)
+
+        # Draw all points in green
+        glUniform3f(color_loc, 0.0, 1.0, 0.0)
+        glDrawArrays(GL_POINTS, 0, len(landmarks))
+
+        # Draw face oval contour in white
+        glUniform3f(color_loc, 1.0, 1.0, 1.0)
+        self._draw_landmark_path(points_2d, FACE_OVAL_PATH)
+
+        # Draw lips in cyan
+        glUniform3f(color_loc, 0.0, 1.0, 1.0)
+        self._draw_landmark_path(points_2d, LIPS_PATH)
+
+        # Draw eyes in yellow
+        glUniform3f(color_loc, 1.0, 1.0, 0.0)
+        self._draw_landmark_path(points_2d, LEFT_EYE_PATH)
+        self._draw_landmark_path(points_2d, RIGHT_EYE_PATH)
+
+        # Draw eyebrows in orange
+        glUniform3f(color_loc, 1.0, 0.6, 0.0)
+        self._draw_landmark_path(points_2d, LEFT_EYEBROW_PATH)
+        self._draw_landmark_path(points_2d, RIGHT_EYEBROW_PATH)
+
+        # Draw nose in magenta
+        glUniform3f(color_loc, 1.0, 0.0, 1.0)
+        self._draw_landmark_path(points_2d, NOSE_PATH)
+
+        glBindVertexArray(0)
+        glDisable(GL_PROGRAM_POINT_SIZE)
+
+    def _draw_landmark_path(self, points_2d: np.ndarray, indices: List[int]):
+        """Draw a path connecting landmarks by indices."""
+        if len(indices) < 2:
+            return
+
+        # Create line strip data
+        path_points = np.array(
+            [points_2d[i] for i in indices if i < len(points_2d)],
+            dtype=np.float32
+        )
+
+        if len(path_points) < 2:
+            return
+
+        # Upload and draw
+        glBindBuffer(GL_ARRAY_BUFFER, self.mesh_vbo)
+        glBufferSubData(GL_ARRAY_BUFFER, 0, path_points.nbytes, path_points)
+        glDrawArrays(GL_LINE_STRIP, 0, len(path_points))
+
     def _render_halo(self, landmarks: List[Tuple[float, float, float]], dt: float):
-        """Render halo of spheres around head."""
+        """Render halo of spheres above head using forehead landmark."""
         # Get face metrics
         fw = face_width(landmarks)
         if fw < 0.01:
             return
 
-        hr = halo_radius(fw, scale_factor=1.3)
-        center = face_center(landmarks)
+        hr = halo_radius(fw, scale_factor=0.8)  # Smaller radius for tighter halo
+        forehead = forehead_center(landmarks)
+
+        # Mirror X coordinate to match the flipped camera
+        forehead_mirrored = (1.0 - forehead[0], forehead[1], forehead[2])
 
         # Update rotation
         self.halo_angle += self.HALO_ROTATION_SPEED * dt
 
-        # Get sphere positions
-        positions = halo_sphere_positions(center, hr, self.NUM_HALO_SPHERES, self.halo_angle)
+        # Get sphere positions using forehead-based positioning
+        positions = halo_sphere_positions_v2(
+            forehead_mirrored, hr, self.NUM_HALO_SPHERES, self.halo_angle,
+            height_offset=0.06  # Position above forehead
+        )
 
         # Render each sphere with gradient colors
         for i, pos in enumerate(positions):
@@ -462,33 +623,34 @@ class ARFilterApp:
             self._render_sphere(pos, self.SPHERE_SIZE, (r, g, b))
 
     def _render_mouth_rects(self, landmarks: List[Tuple[float, float, float]]):
-        """Render mouth-reactive rectangles."""
+        """Render mouth-reactive rectangles at the actual mouth position."""
         # Get mouth openness
         raw_mouth = mouth_openness(landmarks)
         self.smoothed_mouth = smooth_value(self.smoothed_mouth, raw_mouth, 0.3)
 
-        # Get mouth position
-        if len(landmarks) > FaceLandmarks.LOWER_LIP_CENTER:
-            mouth_pos = landmarks[FaceLandmarks.LOWER_LIP_CENTER]
-        else:
-            return
+        # Get actual mouth center and width
+        mouth_pos = mouth_center(landmarks)
+        m_width = mouth_width(landmarks)
 
-        # Calculate scale and color
+        # Mirror X coordinate to match the flipped camera
+        mouth_pos_mirrored = (1.0 - mouth_pos[0], mouth_pos[1], mouth_pos[2])
+
+        # Calculate scale and color based on mouth openness
         scale = mouth_rect_scale(self.smoothed_mouth, min_scale=0.5, max_scale=2.5)
         color = mouth_rect_color(self.smoothed_mouth)
 
-        # Render rectangles in front of mouth
-        base_width = self.RECT_BASE_WIDTH
-        base_height = self.RECT_BASE_HEIGHT * scale
+        # Base rectangle size proportional to mouth width
+        base_width = m_width * 0.25
+        base_height = base_width * 0.5 * scale
 
+        # Render rectangles centered on the mouth
         for i in range(self.NUM_MOUTH_RECTS):
-            # Offset each rect slightly
-            offset_x = (i - 1) * base_width * 1.5
-            offset_y = base_height * 0.5
+            # Offset each rect horizontally, spread across mouth width
+            offset_x = (i - 1) * base_width * 1.2
 
             pos = (
-                mouth_pos[0] + offset_x,
-                mouth_pos[1] + offset_y,
+                mouth_pos_mirrored[0] + offset_x,
+                mouth_pos_mirrored[1],
                 0.1  # Slightly in front
             )
 
@@ -521,7 +683,9 @@ class ARFilterApp:
         self.last_time = time.time()
         self.fps_update_time = self.last_time
 
-        print("AR Filter started. Press ESC to exit.")
+        print("AR Filter started.")
+        print("  [ESC] Exit")
+        print("  [D]   Toggle FaceMesh debug visualization")
 
         while self.running and not glfw.window_should_close(self.window):
             # Calculate delta time
@@ -557,6 +721,13 @@ class ARFilterApp:
 
             # Render AR elements if face detected
             if landmarks:
+                # Debug: render FaceMesh visualization first (behind AR elements)
+                if self.show_debug_mesh:
+                    glDisable(GL_DEPTH_TEST)
+                    self._render_facemesh_debug(landmarks)
+                    glEnable(GL_DEPTH_TEST)
+
+                # Render AR filter elements
                 self._render_halo(landmarks, dt)
                 self._render_mouth_rects(landmarks)
 
@@ -580,9 +751,13 @@ class ARFilterApp:
             glDeleteProgram(self.shader_program)
         if self.bg_shader_program:
             glDeleteProgram(self.bg_shader_program)
+        if self.mesh_shader_program:
+            glDeleteProgram(self.mesh_shader_program)
 
         if self.sphere_vao:
             glDeleteVertexArrays(1, [self.sphere_vao])
+        if self.mesh_vao:
+            glDeleteVertexArrays(1, [self.mesh_vao])
         if self.quad_vao:
             glDeleteVertexArrays(1, [self.quad_vao])
         if self.bg_vao:
