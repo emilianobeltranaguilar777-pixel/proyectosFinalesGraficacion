@@ -1123,8 +1123,8 @@ class ARFilterApp:
         right_width = right_eye_width(landmarks)
 
         # Calculate plate dimensions for each eye
-        left_plate_w, left_plate_h = eye_plate_dimensions(left_width, width_scale=1.8, height_ratio=0.7)
-        right_plate_w, right_plate_h = eye_plate_dimensions(right_width, width_scale=1.8, height_ratio=0.7)
+        left_plate_w, left_plate_h = eye_plate_dimensions(landmarks, is_left=True, width_scale=1.8)
+        right_plate_w, right_plate_h = eye_plate_dimensions(landmarks, is_left=False, width_scale=1.8)
 
         # Mirror X coordinates to match the flipped camera
         left_eye_mirrored = (1.0 - left_eye_pos[0], left_eye_pos[1], left_eye_pos[2])
