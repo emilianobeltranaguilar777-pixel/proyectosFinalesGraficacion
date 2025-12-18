@@ -43,7 +43,7 @@ from .metrics import (
     left_eye_width, right_eye_width, robot_eye_bar_color, robot_eye_bar_heights,
     eye_plate_dimensions
 )
-from .primitives import build_sphere, build_quad, build_cube
+from .primitives import build_sphere, build_quad, build_cube, build_semicircle
 import random
 
 
@@ -301,6 +301,13 @@ class ARFilterApp:
         self.particle_shader_program = None
         self.particle_vao = None
         self.particle_vbo = None
+
+        # Semi-circle geometry (cached) for robot eyes
+        self.semicircle_vao = None
+        self.semicircle_vbo = None
+        self.semicircle_nbo = None
+        self.semicircle_ibo = None
+        self.semicircle_index_count = 0
 
         # Orbiting cubes system
         self.cubes_system = OrbitingCubesSystem()
@@ -649,6 +656,31 @@ class ARFilterApp:
 
         glBindVertexArray(0)
 
+        # Build semi-circle geometry for robot eyes (24 segments for smooth curve)
+        semicircle_verts, semicircle_norms, semicircle_indices = build_semicircle(radius=1.0, segments=24)
+        self.semicircle_index_count = len(semicircle_indices) * 3
+
+        self.semicircle_vao = glGenVertexArrays(1)
+        glBindVertexArray(self.semicircle_vao)
+
+        self.semicircle_vbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.semicircle_vbo)
+        glBufferData(GL_ARRAY_BUFFER, semicircle_verts.nbytes, semicircle_verts, GL_STATIC_DRAW)
+        glEnableVertexAttribArray(pos_loc)
+        glVertexAttribPointer(pos_loc, 3, GL_FLOAT, GL_FALSE, 0, None)
+
+        self.semicircle_nbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.semicircle_nbo)
+        glBufferData(GL_ARRAY_BUFFER, semicircle_norms.nbytes, semicircle_norms, GL_STATIC_DRAW)
+        glEnableVertexAttribArray(norm_loc)
+        glVertexAttribPointer(norm_loc, 3, GL_FLOAT, GL_FALSE, 0, None)
+
+        self.semicircle_ibo = glGenBuffers(1)
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.semicircle_ibo)
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, semicircle_indices.nbytes, semicircle_indices, GL_STATIC_DRAW)
+
+        glBindVertexArray(0)
+
     def _create_projection_matrix(self) -> np.ndarray:
         """Create orthographic projection matrix."""
         # Simple orthographic for 2D-like rendering
@@ -854,6 +886,50 @@ class ARFilterApp:
         glDrawElements(GL_TRIANGLES, self.cube_index_count, GL_UNSIGNED_INT, None)
         glBindVertexArray(0)
 
+    def _render_semicircle(self, position: Tuple[float, float, float],
+                           radius: float, color: Tuple[float, float, float],
+                           flip_y: bool = False):
+        """
+        Render a semi-circle at given position.
+
+        Args:
+            position: Center position (x, y, z)
+            radius: Semi-circle radius
+            color: RGB color tuple
+            flip_y: If True, curve faces down (flat edge on top)
+        """
+        # Build model matrix: translate * scale (optionally flip)
+        model = np.eye(4, dtype=np.float32)
+        model[0, 0] = radius
+        model[1, 1] = -radius if flip_y else radius  # Flip Y to curve down
+        model[2, 2] = radius
+        model[0, 3] = position[0]
+        model[1, 3] = position[1]
+        model[2, 3] = position[2]
+
+        view = self._create_view_matrix()
+        proj = self._create_projection_matrix()
+
+        glUseProgram(self.shader_program)
+
+        model_loc = glGetUniformLocation(self.shader_program, "model")
+        view_loc = glGetUniformLocation(self.shader_program, "view")
+        proj_loc = glGetUniformLocation(self.shader_program, "projection")
+        color_loc = glGetUniformLocation(self.shader_program, "objectColor")
+        light_loc = glGetUniformLocation(self.shader_program, "lightDir")
+        ambient_loc = glGetUniformLocation(self.shader_program, "ambient")
+
+        glUniformMatrix4fv(model_loc, 1, GL_TRUE, model)
+        glUniformMatrix4fv(view_loc, 1, GL_TRUE, view)
+        glUniformMatrix4fv(proj_loc, 1, GL_TRUE, proj)
+        glUniform3f(color_loc, *color)
+        glUniform3f(light_loc, 0.0, 0.0, 1.0)
+        glUniform1f(ambient_loc, 0.7)
+
+        glBindVertexArray(self.semicircle_vao)
+        glDrawElements(GL_TRIANGLES, self.semicircle_index_count, GL_UNSIGNED_INT, None)
+        glBindVertexArray(0)
+
     def _render_particles(self):
         """Render particle trails."""
         particle_data = self.cubes_system.get_particle_data()
@@ -926,12 +1002,12 @@ class ARFilterApp:
 
         glBindVertexArray(self.mesh_vao)
 
-        # Draw all points in green
-        glUniform3f(color_loc, 0.0, 1.0, 0.0)
+        # Draw all points using tracking color (changed with A/R/V/B keys)
+        glUniform3f(color_loc, *self.tracking_color)
         glDrawArrays(GL_POINTS, 0, len(landmarks))
 
-        # Draw face oval contour in white
-        glUniform3f(color_loc, 1.0, 1.0, 1.0)
+        # Draw face oval contour using tracking color
+        glUniform3f(color_loc, *self.tracking_color)
         self._draw_landmark_path(points_2d, FACE_OVAL_PATH)
 
         # Draw lips in cyan
@@ -1099,32 +1175,32 @@ class ARFilterApp:
 
     def _render_robot_eyes(self, landmarks: List[Tuple[float, float, float]], dt: float):
         """
-        Render robotic animated eyes with semi-circular plates and animated bars.
+        Render robotic animated eyes with REAL semi-circular plates and animated bars.
 
         Features:
-        - Semi-circular plate over each eye
-        - N animated vertical bars per eye reacting to eye openness/blinks
+        - REAL semi-circular plate over each eye (curved top, flat bottom)
+        - 5 animated vertical bars per eye reacting to eye openness/blinks
         - Smooth color gradient (dark blue → cyan → yellow → orange)
-        - Fast nervous pulse animation
+        - Fast nervous pulse animation (15Hz)
         """
         # Update time for animations
         self.robot_eye_time += dt
 
-        # Get eye openness with smoothing (alpha=0.2)
+        # Get eye openness with smoothing (alpha=0.2 as requested)
         raw_left_eye = left_eye_openness(landmarks)
         raw_right_eye = right_eye_openness(landmarks)
-        self.smoothed_left_eye = smooth_value(self.smoothed_left_eye, raw_left_eye, 0.2)
-        self.smoothed_right_eye = smooth_value(self.smoothed_right_eye, raw_right_eye, 0.2)
+        self.smoothed_left_eye = self.smoothed_left_eye * 0.8 + raw_left_eye * 0.2
+        self.smoothed_right_eye = self.smoothed_right_eye * 0.8 + raw_right_eye * 0.2
 
-        # Get eye positions and dimensions
+        # Get eye positions and widths
         left_eye_pos = left_eye_center(landmarks)
         right_eye_pos = right_eye_center(landmarks)
         left_width = left_eye_width(landmarks)
         right_width = right_eye_width(landmarks)
 
-        # Calculate plate dimensions for each eye
-        left_plate_w, left_plate_h = eye_plate_dimensions(landmarks, is_left=True, width_scale=1.8)
-        right_plate_w, right_plate_h = eye_plate_dimensions(landmarks, is_left=False, width_scale=1.8)
+        # Calculate radius as eye_width * 1.25 (as requested)
+        left_radius = left_width * 1.25
+        right_radius = right_width * 1.25
 
         # Mirror X coordinates to match the flipped camera
         left_eye_mirrored = (1.0 - left_eye_pos[0], left_eye_pos[1], left_eye_pos[2])
@@ -1135,38 +1211,43 @@ class ARFilterApp:
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
         # Render both eyes
-        for eye_pos, plate_w, plate_h, eye_openness, eye_name in [
-            (left_eye_mirrored, left_plate_w, left_plate_h, self.smoothed_left_eye, "left"),
-            (right_eye_mirrored, right_plate_w, right_plate_h, self.smoothed_right_eye, "right")
+        for eye_pos, radius, eye_openness in [
+            (left_eye_mirrored, left_radius, self.smoothed_left_eye),
+            (right_eye_mirrored, right_radius, self.smoothed_right_eye)
         ]:
-            # 1. Render dark plate covering the eye (semi-circular effect via quad)
-            plate_color = (0.05, 0.08, 0.15)  # Dark blue
-            self._render_quad(
-                (eye_pos[0], eye_pos[1], 0.05),
-                plate_w, plate_h, plate_color
-            )
-
-            # 2. Render neon border glow
-            border_color = (0.1, 0.4, 0.7)  # Cyan glow
-            self._render_quad(
+            # 1. Render neon border glow (slightly larger semicircle behind)
+            border_color = (0.04, 0.16, 0.28)  # Dark cyan glow
+            self._render_semicircle(
                 (eye_pos[0], eye_pos[1], 0.04),
-                plate_w * 1.1, plate_h * 1.15,
-                (border_color[0] * 0.4, border_color[1] * 0.4, border_color[2] * 0.4)
+                radius * 1.12,
+                border_color,
+                flip_y=True  # Curve faces down, flat edge on top (covers eyelid)
             )
 
-            # 3. Render animated bars
+            # 2. Render dark semi-circular plate covering the eye
+            plate_color = (0.05, 0.08, 0.15)  # Dark blue
+            self._render_semicircle(
+                (eye_pos[0], eye_pos[1], 0.05),
+                radius,
+                plate_color,
+                flip_y=True  # Curve faces down
+            )
+
+            # 3. Render animated bars (inside the semi-circle)
             num_bars = 5
+            # Add subtle pulse based on eye openness
+            pulse = math.sin(self.robot_eye_time * 8.0) * eye_openness * 0.15
             bar_heights = robot_eye_bar_heights(
-                num_bars, eye_openness, self.robot_eye_time,
-                base_height=0.3, max_height=1.0, pulse_freq=15.0
+                num_bars, eye_openness + pulse, self.robot_eye_time,
+                base_height=0.25, max_height=1.0, pulse_freq=15.0
             )
             bar_color = robot_eye_bar_color(eye_openness)
 
-            # Calculate bar dimensions
-            total_bar_width = plate_w * 0.8
+            # Calculate bar dimensions (clipped inside semi-circle)
+            total_bar_width = radius * 1.6  # Bars span most of the semi-circle width
             bar_spacing = total_bar_width / num_bars
-            bar_width = bar_spacing * 0.65
-            max_bar_height = plate_h * 0.75
+            bar_width = bar_spacing * 0.6
+            max_bar_height = radius * 0.8  # Bars don't exceed semi-circle bounds
 
             # Start position (left side of bars)
             start_x = eye_pos[0] - total_bar_width / 2 + bar_spacing / 2
@@ -1176,9 +1257,9 @@ class ARFilterApp:
                 bar_x = start_x + i * bar_spacing
                 bar_h = bar_heights[i] * max_bar_height
 
-                # Render bar
+                # Render bar (growing downward from flat edge)
                 self._render_quad(
-                    (bar_x, eye_pos[1], 0.06),
+                    (bar_x, eye_pos[1] + bar_h * 0.5, 0.06),
                     bar_width, bar_h, bar_color
                 )
 
@@ -1189,7 +1270,7 @@ class ARFilterApp:
                     min(1.0, bar_color[2] + 0.25)
                 )
                 self._render_quad(
-                    (bar_x, eye_pos[1] - bar_h * 0.35, 0.07),
+                    (bar_x, eye_pos[1] + bar_h * 0.1, 0.07),
                     bar_width * 0.5, bar_h * 0.12, highlight_color
                 )
 
@@ -1313,6 +1394,8 @@ class ARFilterApp:
             glDeleteVertexArrays(1, [self.cube_vao])
         if self.particle_vao:
             glDeleteVertexArrays(1, [self.particle_vao])
+        if self.semicircle_vao:
+            glDeleteVertexArrays(1, [self.semicircle_vao])
 
         if self.bg_texture:
             glDeleteTextures(1, [self.bg_texture])

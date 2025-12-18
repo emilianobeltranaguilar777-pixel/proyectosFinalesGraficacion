@@ -248,6 +248,54 @@ def icosphere_vertex_count(subdivisions: int) -> int:
     return 10 * (4 ** subdivisions) + 2
 
 
+def build_semicircle(radius: float = 1.0,
+                     segments: int = 24) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Build a semi-circle (half disk) using triangle fan approach.
+
+    The semi-circle has:
+    - Curved part on top (positive Y)
+    - Flat edge on bottom (Y=0)
+    - Faces +Z direction
+
+    Args:
+        radius: Semi-circle radius
+        segments: Number of arc segments (more = smoother curve)
+
+    Returns:
+        Tuple of (vertices, normals, indices):
+        - vertices: (segments+2)x3 array of vertex positions
+        - normals: (segments+2)x3 array of vertex normals (all [0,0,1])
+        - indices: segments x 3 array of triangle indices
+    """
+    vertices = []
+    normals = []
+    indices = []
+
+    # Center vertex at origin (bottom center of semi-circle)
+    vertices.append([0.0, 0.0, 0.0])
+    normals.append([0.0, 0.0, 1.0])
+
+    # Arc vertices from left (-X) to right (+X), curving up (+Y)
+    # Angle goes from pi (180°) to 0 (0°)
+    for i in range(segments + 1):
+        angle = math.pi - (i / segments) * math.pi  # pi to 0
+        x = radius * math.cos(angle)
+        y = radius * math.sin(angle)
+        vertices.append([x, y, 0.0])
+        normals.append([0.0, 0.0, 1.0])
+
+    # Triangle fan indices: center (0) + arc vertices
+    for i in range(segments):
+        indices.append([0, i + 1, i + 2])
+
+    return (
+        np.array(vertices, dtype=np.float32),
+        np.array(normals, dtype=np.float32),
+        np.array(indices, dtype=np.uint32)
+    )
+
+
 def build_cube(size: float = 1.0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Build a cube with proper normals for lighting.
