@@ -246,3 +246,119 @@ def icosphere_vertex_count(subdivisions: int) -> int:
     # Starts with 12, each subdivision roughly quadruples faces
     # vertices ~ 10 * 4^subdivisions + 2
     return 10 * (4 ** subdivisions) + 2
+
+
+def build_semicircle(radius: float = 1.0,
+                     segments: int = 24) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Build a semi-circle (half disk) using triangle fan approach.
+
+    The semi-circle has:
+    - Curved part on top (positive Y)
+    - Flat edge on bottom (Y=0)
+    - Faces +Z direction
+
+    Args:
+        radius: Semi-circle radius
+        segments: Number of arc segments (more = smoother curve)
+
+    Returns:
+        Tuple of (vertices, normals, indices):
+        - vertices: (segments+2)x3 array of vertex positions
+        - normals: (segments+2)x3 array of vertex normals (all [0,0,1])
+        - indices: segments x 3 array of triangle indices
+    """
+    vertices = []
+    normals = []
+    indices = []
+
+    # Center vertex at origin (bottom center of semi-circle)
+    vertices.append([0.0, 0.0, 0.0])
+    normals.append([0.0, 0.0, 1.0])
+
+    # Arc vertices from left (-X) to right (+X), curving up (+Y)
+    # Angle goes from pi (180°) to 0 (0°)
+    for i in range(segments + 1):
+        angle = math.pi - (i / segments) * math.pi  # pi to 0
+        x = radius * math.cos(angle)
+        y = radius * math.sin(angle)
+        vertices.append([x, y, 0.0])
+        normals.append([0.0, 0.0, 1.0])
+
+    # Triangle fan indices: center (0) + arc vertices
+    for i in range(segments):
+        indices.append([0, i + 1, i + 2])
+
+    return (
+        np.array(vertices, dtype=np.float32),
+        np.array(normals, dtype=np.float32),
+        np.array(indices, dtype=np.uint32)
+    )
+
+
+def build_cube(size: float = 1.0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Build a cube with proper normals for lighting.
+
+    Args:
+        size: Cube side length
+
+    Returns:
+        Tuple of (vertices, normals, indices):
+        - vertices: 24x3 array of vertex positions (6 faces × 4 verts)
+        - normals: 24x3 array of vertex normals
+        - indices: 12x3 array of triangle indices (6 faces × 2 triangles)
+    """
+    hs = size / 2.0  # half size
+
+    # Each face has 4 vertices with shared normals per face
+    # Front face (+Z)
+    vertices = [
+        [-hs, -hs,  hs], [ hs, -hs,  hs], [ hs,  hs,  hs], [-hs,  hs,  hs],  # 0-3
+        # Back face (-Z)
+        [ hs, -hs, -hs], [-hs, -hs, -hs], [-hs,  hs, -hs], [ hs,  hs, -hs],  # 4-7
+        # Top face (+Y)
+        [-hs,  hs,  hs], [ hs,  hs,  hs], [ hs,  hs, -hs], [-hs,  hs, -hs],  # 8-11
+        # Bottom face (-Y)
+        [-hs, -hs, -hs], [ hs, -hs, -hs], [ hs, -hs,  hs], [-hs, -hs,  hs],  # 12-15
+        # Right face (+X)
+        [ hs, -hs,  hs], [ hs, -hs, -hs], [ hs,  hs, -hs], [ hs,  hs,  hs],  # 16-19
+        # Left face (-X)
+        [-hs, -hs, -hs], [-hs, -hs,  hs], [-hs,  hs,  hs], [-hs,  hs, -hs],  # 20-23
+    ]
+
+    normals = [
+        # Front face
+        [0, 0, 1], [0, 0, 1], [0, 0, 1], [0, 0, 1],
+        # Back face
+        [0, 0, -1], [0, 0, -1], [0, 0, -1], [0, 0, -1],
+        # Top face
+        [0, 1, 0], [0, 1, 0], [0, 1, 0], [0, 1, 0],
+        # Bottom face
+        [0, -1, 0], [0, -1, 0], [0, -1, 0], [0, -1, 0],
+        # Right face
+        [1, 0, 0], [1, 0, 0], [1, 0, 0], [1, 0, 0],
+        # Left face
+        [-1, 0, 0], [-1, 0, 0], [-1, 0, 0], [-1, 0, 0],
+    ]
+
+    indices = [
+        # Front
+        [0, 1, 2], [0, 2, 3],
+        # Back
+        [4, 5, 6], [4, 6, 7],
+        # Top
+        [8, 9, 10], [8, 10, 11],
+        # Bottom
+        [12, 13, 14], [12, 14, 15],
+        # Right
+        [16, 17, 18], [16, 18, 19],
+        # Left
+        [20, 21, 22], [20, 22, 23],
+    ]
+
+    return (
+        np.array(vertices, dtype=np.float32),
+        np.array(normals, dtype=np.float32),
+        np.array(indices, dtype=np.uint32)
+    )
