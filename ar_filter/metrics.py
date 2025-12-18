@@ -556,3 +556,277 @@ def cube_orbit_positions(
         results.append(((ox, oy, oz), spin_angle, wobble_x, wobble_z))
 
     return results
+
+
+# ============================================================================
+# Robot Eye Metrics
+# ============================================================================
+
+def eye_openness(
+    landmarks: List[Tuple[float, float, float]],
+    upper_lid_idx: int,
+    lower_lid_idx: int,
+    left_corner_idx: int,
+    right_corner_idx: int
+) -> float:
+    """
+    Calculate eye openness (0.0 = closed/blink, 1.0 = fully open).
+
+    Args:
+        landmarks: List of (x, y, z) normalized landmark coordinates
+        upper_lid_idx: Index of upper eyelid center
+        lower_lid_idx: Index of lower eyelid center
+        left_corner_idx: Index of left eye corner
+        right_corner_idx: Index of right eye corner
+
+    Returns:
+        Eye openness ratio normalized to [0.0, 1.0]
+    """
+    max_idx = max(upper_lid_idx, lower_lid_idx, left_corner_idx, right_corner_idx)
+    if not landmarks or len(landmarks) <= max_idx:
+        return 0.5
+
+    upper = landmarks[upper_lid_idx]
+    lower = landmarks[lower_lid_idx]
+    left = landmarks[left_corner_idx]
+    right = landmarks[right_corner_idx]
+
+    # Vertical distance between lids
+    lid_distance = abs(lower[1] - upper[1])
+
+    # Eye width for normalization
+    eye_w = math.sqrt((right[0] - left[0])**2 + (right[1] - left[1])**2)
+    if eye_w < 0.001:
+        return 0.5
+
+    # Normalize by eye width
+    ratio = lid_distance / eye_w
+
+    # Typical range: closed ~0.05, open ~0.25
+    MIN_RATIO = 0.05
+    MAX_RATIO = 0.25
+
+    normalized = (ratio - MIN_RATIO) / (MAX_RATIO - MIN_RATIO)
+    return clamp(normalized, 0.0, 1.0)
+
+
+def left_eye_openness(landmarks: List[Tuple[float, float, float]]) -> float:
+    """
+    Calculate left eye openness using MediaPipe landmarks.
+
+    Args:
+        landmarks: List of (x, y, z) normalized landmark coordinates
+
+    Returns:
+        Left eye openness ratio [0.0, 1.0]
+    """
+    # Left eye landmarks: 159 (upper), 145 (lower), 33 (left corner), 133 (right corner)
+    return eye_openness(landmarks, 159, 145, 33, 133)
+
+
+def right_eye_openness(landmarks: List[Tuple[float, float, float]]) -> float:
+    """
+    Calculate right eye openness using MediaPipe landmarks.
+
+    Args:
+        landmarks: List of (x, y, z) normalized landmark coordinates
+
+    Returns:
+        Right eye openness ratio [0.0, 1.0]
+    """
+    # Right eye landmarks: 386 (upper), 374 (lower), 362 (left corner), 263 (right corner)
+    return eye_openness(landmarks, 386, 374, 362, 263)
+
+
+def eye_center(
+    landmarks: List[Tuple[float, float, float]],
+    left_corner_idx: int,
+    right_corner_idx: int,
+    upper_lid_idx: int,
+    lower_lid_idx: int
+) -> Tuple[float, float, float]:
+    """
+    Calculate eye center position.
+
+    Args:
+        landmarks: List of (x, y, z) normalized landmark coordinates
+        left_corner_idx: Index of left eye corner
+        right_corner_idx: Index of right eye corner
+        upper_lid_idx: Index of upper eyelid
+        lower_lid_idx: Index of lower eyelid
+
+    Returns:
+        (x, y, z) center position of eye
+    """
+    max_idx = max(left_corner_idx, right_corner_idx, upper_lid_idx, lower_lid_idx)
+    if not landmarks or len(landmarks) <= max_idx:
+        return (0.5, 0.4, 0.0)
+
+    left = landmarks[left_corner_idx]
+    right = landmarks[right_corner_idx]
+    upper = landmarks[upper_lid_idx]
+    lower = landmarks[lower_lid_idx]
+
+    center_x = (left[0] + right[0]) / 2.0
+    center_y = (upper[1] + lower[1]) / 2.0
+    center_z = (left[2] + right[2]) / 2.0
+
+    return (center_x, center_y, center_z)
+
+
+def left_eye_center(landmarks: List[Tuple[float, float, float]]) -> Tuple[float, float, float]:
+    """Get left eye center position."""
+    return eye_center(landmarks, 33, 133, 159, 145)
+
+
+def right_eye_center(landmarks: List[Tuple[float, float, float]]) -> Tuple[float, float, float]:
+    """Get right eye center position."""
+    return eye_center(landmarks, 362, 263, 386, 374)
+
+
+def eye_width(
+    landmarks: List[Tuple[float, float, float]],
+    left_corner_idx: int,
+    right_corner_idx: int
+) -> float:
+    """
+    Calculate eye width from corner to corner.
+
+    Args:
+        landmarks: List of (x, y, z) normalized landmark coordinates
+        left_corner_idx: Index of left eye corner
+        right_corner_idx: Index of right eye corner
+
+    Returns:
+        Eye width as distance between corners
+    """
+    max_idx = max(left_corner_idx, right_corner_idx)
+    if not landmarks or len(landmarks) <= max_idx:
+        return 0.05
+
+    left = landmarks[left_corner_idx]
+    right = landmarks[right_corner_idx]
+
+    dx = right[0] - left[0]
+    dy = right[1] - left[1]
+
+    return math.sqrt(dx * dx + dy * dy)
+
+
+def left_eye_width(landmarks: List[Tuple[float, float, float]]) -> float:
+    """Get left eye width."""
+    return eye_width(landmarks, 33, 133)
+
+
+def right_eye_width(landmarks: List[Tuple[float, float, float]]) -> float:
+    """Get right eye width."""
+    return eye_width(landmarks, 362, 263)
+
+
+def robot_eye_bar_color(openness: float) -> Tuple[float, float, float]:
+    """
+    Calculate eye bar color based on openness (dark blue → cyan → yellow → orange).
+
+    Args:
+        openness: Eye openness ratio [0.0, 1.0]
+
+    Returns:
+        RGB color tuple with values in [0.0, 1.0]
+    """
+    openness = clamp(openness, 0.0, 1.0)
+
+    # Four-phase gradient for eyes (more reactive than mouth)
+    if openness < 0.3:
+        # Closed: Dark blue
+        t = openness / 0.3
+        r = lerp(0.1, 0.2, t)
+        g = lerp(0.2, 0.6, t)
+        b = lerp(0.4, 1.0, t)
+    elif openness < 0.6:
+        # Normal: Cyan to green
+        t = (openness - 0.3) / 0.3
+        r = lerp(0.2, 0.4, t)
+        g = lerp(0.6, 1.0, t)
+        b = lerp(1.0, 0.6, t)
+    elif openness < 0.85:
+        # Open: Yellow
+        t = (openness - 0.6) / 0.25
+        r = lerp(0.4, 1.0, t)
+        g = lerp(1.0, 1.0, t)
+        b = lerp(0.6, 0.2, t)
+    else:
+        # Very open: Orange/red
+        t = (openness - 0.85) / 0.15
+        r = 1.0
+        g = lerp(1.0, 0.5, t)
+        b = lerp(0.2, 0.1, t)
+
+    return (r, g, b)
+
+
+def robot_eye_bar_heights(
+    num_bars: int,
+    openness: float,
+    time: float,
+    base_height: float = 0.2,
+    max_height: float = 1.0,
+    pulse_freq: float = 15.0
+) -> List[float]:
+    """
+    Calculate heights for eye bars based on openness with fast pulse.
+
+    Args:
+        num_bars: Number of bars
+        openness: Eye openness ratio [0.0, 1.0]
+        time: Current time in seconds (for animation)
+        base_height: Minimum bar height when eye closed
+        max_height: Maximum bar height when eye fully open
+        pulse_freq: Frequency of pulsing animation (faster than mouth)
+
+    Returns:
+        List of height values for each bar
+    """
+    heights = []
+    openness = clamp(openness, 0.0, 1.0)
+
+    for i in range(num_bars):
+        # Base height scales with openness
+        height = lerp(base_height, max_height, openness)
+
+        # Add faster pulse effect for eyes (nervous response)
+        if openness > 0.2:
+            phase = (i / max(1, num_bars - 1)) * math.pi * 2.0
+            pulse = math.sin(time * pulse_freq + phase) * 0.5 + 0.5
+            pulse_amplitude = openness * 0.2
+            height += pulse * pulse_amplitude
+
+        heights.append(clamp(height, 0.0, max_height))
+
+    return heights
+
+
+def eye_plate_dimensions(
+    landmarks: List[Tuple[float, float, float]],
+    is_left: bool,
+    width_scale: float = 1.2
+) -> Tuple[float, float]:
+    """
+    Calculate robot eye semi-circle dimensions.
+
+    Args:
+        landmarks: List of (x, y, z) normalized landmark coordinates
+        is_left: True for left eye, False for right eye
+        width_scale: Multiplier for plate width relative to eye width
+
+    Returns:
+        Tuple of (plate_width, plate_height) - height is radius of semi-circle
+    """
+    if is_left:
+        e_width = left_eye_width(landmarks)
+    else:
+        e_width = right_eye_width(landmarks)
+
+    plate_width = e_width * width_scale
+    plate_height = plate_width * 0.5  # Semi-circle radius
+
+    return (plate_width, plate_height)

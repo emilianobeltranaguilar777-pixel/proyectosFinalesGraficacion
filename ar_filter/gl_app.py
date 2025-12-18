@@ -38,7 +38,10 @@ from .metrics import (
     halo_sphere_positions, mouth_rect_scale, mouth_rect_color,
     smooth_value, clamp, forehead_center, mouth_center, mouth_width,
     halo_sphere_positions_v2, robot_mouth_bar_color, robot_mouth_bar_heights,
-    mouth_plate_dimensions, estimate_face_roll
+    mouth_plate_dimensions, estimate_face_roll,
+    left_eye_openness, right_eye_openness, left_eye_center, right_eye_center,
+    left_eye_width, right_eye_width, robot_eye_bar_color, robot_eye_bar_heights,
+    eye_plate_dimensions
 )
 from .primitives import build_sphere, build_quad, build_cube
 import random
@@ -77,9 +80,17 @@ class CubeData:
         self.spin_speed = random.uniform(0.6, 2.5)
         self.wobble_speed = random.uniform(1.4, 3.0)
         self.wobble_amp = random.uniform(0.3, 1.0)
-        # Color: bluish tones with variation
-        base = random.uniform(0.5, 1.0)
-        self.color = (base * 0.6, base * 0.8, 1.0)
+        # Color: vibrant neon colors (cyan, magenta, blue) for better visibility
+        color_choice = random.randint(0, 2)
+        if color_choice == 0:
+            # Intense cyan
+            self.color = (0.2, 0.9 + random.uniform(0, 0.1), 1.0)
+        elif color_choice == 1:
+            # Neon magenta/pink
+            self.color = (1.0, 0.3 + random.uniform(0, 0.2), 0.8 + random.uniform(0, 0.2))
+        else:
+            # Electric blue
+            self.color = (0.3 + random.uniform(0, 0.2), 0.5 + random.uniform(0, 0.2), 1.0)
 
 
 class Particle:
@@ -101,8 +112,8 @@ class OrbitingCubesSystem:
     """
 
     NUM_CUBES = 12
-    CUBE_SIZE = 0.012
-    PARTICLE_COUNT = 400
+    CUBE_SIZE = 0.017  # Increased from 0.012 for better visibility
+    PARTICLE_COUNT = 500  # Increased for denser trails
 
     def __init__(self):
         self.cubes = [CubeData() for _ in range(self.NUM_CUBES)]
@@ -164,7 +175,7 @@ class OrbitingCubesSystem:
             p.pos[0] += p.vel[0] * dt
             p.pos[1] += p.vel[1] * dt
             p.pos[2] += p.vel[2] * dt
-            p.life -= dt * 1.2  # Fade out
+            p.life -= dt * 0.8  # Slower fade for longer, more visible trails
 
     def get_cube_transforms(self, center: Tuple[float, float, float],
                             base_radius: float) -> List[Tuple]:
@@ -297,6 +308,15 @@ class ARFilterApp:
         # Robot mouth state
         self.robot_mouth_time = 0.0
 
+        # Robot eyes state
+        self.robot_eye_time = 0.0
+        self.smoothed_left_eye = 0.5
+        self.smoothed_right_eye = 0.5
+
+        # Tracking color state (A=yellow, R=red, V=green, B=blue)
+        self.tracking_color = (0.2, 0.6, 1.0)  # Default: blue
+        self.tracking_color_name = "Blue"
+
         # State
         self.running = False
         self.halo_angle = 0.0
@@ -345,6 +365,23 @@ class ARFilterApp:
             self.show_debug_mesh = not self.show_debug_mesh
             state = "ON" if self.show_debug_mesh else "OFF"
             print(f"[DEBUG] FaceMesh visualization: {state}")
+        # Tracking color controls (A/R/V/B)
+        elif key == glfw.KEY_A and action == glfw.PRESS:
+            self.tracking_color = (1.0, 1.0, 0.2)  # Yellow (Amarillo)
+            self.tracking_color_name = "Amarillo"
+            print(f"[COLOR] Tracking color: {self.tracking_color_name}")
+        elif key == glfw.KEY_R and action == glfw.PRESS:
+            self.tracking_color = (1.0, 0.2, 0.2)  # Red (Rojo)
+            self.tracking_color_name = "Rojo"
+            print(f"[COLOR] Tracking color: {self.tracking_color_name}")
+        elif key == glfw.KEY_V and action == glfw.PRESS:
+            self.tracking_color = (0.2, 1.0, 0.3)  # Green (Verde)
+            self.tracking_color_name = "Verde"
+            print(f"[COLOR] Tracking color: {self.tracking_color_name}")
+        elif key == glfw.KEY_B and action == glfw.PRESS:
+            self.tracking_color = (0.2, 0.6, 1.0)  # Blue (Azul)
+            self.tracking_color_name = "Azul"
+            print(f"[COLOR] Tracking color: {self.tracking_color_name}")
 
     def _init_camera(self) -> bool:
         """Initialize OpenCV camera."""
@@ -1060,6 +1097,104 @@ class ARFilterApp:
 
         glDisable(GL_BLEND)
 
+    def _render_robot_eyes(self, landmarks: List[Tuple[float, float, float]], dt: float):
+        """
+        Render robotic animated eyes with semi-circular plates and animated bars.
+
+        Features:
+        - Semi-circular plate over each eye
+        - N animated vertical bars per eye reacting to eye openness/blinks
+        - Smooth color gradient (dark blue → cyan → yellow → orange)
+        - Fast nervous pulse animation
+        """
+        # Update time for animations
+        self.robot_eye_time += dt
+
+        # Get eye openness with smoothing (alpha=0.2)
+        raw_left_eye = left_eye_openness(landmarks)
+        raw_right_eye = right_eye_openness(landmarks)
+        self.smoothed_left_eye = smooth_value(self.smoothed_left_eye, raw_left_eye, 0.2)
+        self.smoothed_right_eye = smooth_value(self.smoothed_right_eye, raw_right_eye, 0.2)
+
+        # Get eye positions and dimensions
+        left_eye_pos = left_eye_center(landmarks)
+        right_eye_pos = right_eye_center(landmarks)
+        left_width = left_eye_width(landmarks)
+        right_width = right_eye_width(landmarks)
+
+        # Calculate plate dimensions for each eye
+        left_plate_w, left_plate_h = eye_plate_dimensions(left_width, width_scale=1.8, height_ratio=0.7)
+        right_plate_w, right_plate_h = eye_plate_dimensions(right_width, width_scale=1.8, height_ratio=0.7)
+
+        # Mirror X coordinates to match the flipped camera
+        left_eye_mirrored = (1.0 - left_eye_pos[0], left_eye_pos[1], left_eye_pos[2])
+        right_eye_mirrored = (1.0 - right_eye_pos[0], right_eye_pos[1], right_eye_pos[2])
+
+        # Enable blending for alpha
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+        # Render both eyes
+        for eye_pos, plate_w, plate_h, eye_openness, eye_name in [
+            (left_eye_mirrored, left_plate_w, left_plate_h, self.smoothed_left_eye, "left"),
+            (right_eye_mirrored, right_plate_w, right_plate_h, self.smoothed_right_eye, "right")
+        ]:
+            # 1. Render dark plate covering the eye (semi-circular effect via quad)
+            plate_color = (0.05, 0.08, 0.15)  # Dark blue
+            self._render_quad(
+                (eye_pos[0], eye_pos[1], 0.05),
+                plate_w, plate_h, plate_color
+            )
+
+            # 2. Render neon border glow
+            border_color = (0.1, 0.4, 0.7)  # Cyan glow
+            self._render_quad(
+                (eye_pos[0], eye_pos[1], 0.04),
+                plate_w * 1.1, plate_h * 1.15,
+                (border_color[0] * 0.4, border_color[1] * 0.4, border_color[2] * 0.4)
+            )
+
+            # 3. Render animated bars
+            num_bars = 5
+            bar_heights = robot_eye_bar_heights(
+                num_bars, eye_openness, self.robot_eye_time,
+                base_height=0.3, max_height=1.0, pulse_freq=15.0
+            )
+            bar_color = robot_eye_bar_color(eye_openness)
+
+            # Calculate bar dimensions
+            total_bar_width = plate_w * 0.8
+            bar_spacing = total_bar_width / num_bars
+            bar_width = bar_spacing * 0.65
+            max_bar_height = plate_h * 0.75
+
+            # Start position (left side of bars)
+            start_x = eye_pos[0] - total_bar_width / 2 + bar_spacing / 2
+
+            for i in range(num_bars):
+                # Bar position
+                bar_x = start_x + i * bar_spacing
+                bar_h = bar_heights[i] * max_bar_height
+
+                # Render bar
+                self._render_quad(
+                    (bar_x, eye_pos[1], 0.06),
+                    bar_width, bar_h, bar_color
+                )
+
+                # Add highlight on top of each bar
+                highlight_color = (
+                    min(1.0, bar_color[0] + 0.25),
+                    min(1.0, bar_color[1] + 0.25),
+                    min(1.0, bar_color[2] + 0.25)
+                )
+                self._render_quad(
+                    (bar_x, eye_pos[1] - bar_h * 0.35, 0.07),
+                    bar_width * 0.5, bar_h * 0.12, highlight_color
+                )
+
+        glDisable(GL_BLEND)
+
     def run(self):
         """Main application loop."""
         # Initialize
@@ -1090,6 +1225,11 @@ class ARFilterApp:
         print("AR Filter started.")
         print("  [ESC] Exit")
         print("  [D]   Toggle FaceMesh debug visualization")
+        print("  [A]   Tracking color: Amarillo (Yellow)")
+        print("  [R]   Tracking color: Rojo (Red)")
+        print("  [V]   Tracking color: Verde (Green)")
+        print("  [B]   Tracking color: Azul (Blue)")
+        print(f"  Current tracking color: {self.tracking_color_name}")
 
         while self.running and not glfw.window_should_close(self.window):
             # Calculate delta time
@@ -1134,6 +1274,7 @@ class ARFilterApp:
                 # Render AR filter elements
                 self._render_halo(landmarks, dt)
                 self._render_mouth_rects(landmarks, dt)
+                self._render_robot_eyes(landmarks, dt)
 
             # Swap buffers and poll events
             glfw.swap_buffers(self.window)
